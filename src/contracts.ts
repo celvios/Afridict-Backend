@@ -9,7 +9,7 @@ export const Uint = Type.String({ pattern: '^(0|[1-9][0-9]*)$', maxLength: 78,
 const signed = Type.String({ pattern: '^(0|-?[1-9][0-9]*)$', maxLength: 78 });
 export const Country = Type.String({ pattern: '^[A-Z]{2}$', description: 'Country code. ZZ is reserved for the isolated synthetic demo.' });
 export const Roles = ['user', 'market_creator', 'market_approver', 'legal_reviewer', 'integrity_reviewer',
-  'resolution_reviewer', 'compliance_officer', 'market_proposer', 'auditor'] as const;
+  'resolution_reviewer', 'compliance_officer', 'market_proposer', 'auditor', 'finance_operator'] as const;
 export const ErrorSchema = object({
   code: text('Stable error code; branch on this field, not message. Unknown codes must be handled safely.', 80),
   message: text('Safe explanation without provider payloads, identity evidence, or stack traces.'),

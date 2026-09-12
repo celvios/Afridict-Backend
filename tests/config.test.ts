@@ -7,6 +7,11 @@ describe('deployment safety', () => {
     expect(() => config({ NODE_ENV: 'production', AUTH_MODE: 'demo' })).toThrow();
     expect(() => config({ NODE_ENV: 'development', AUTH_MODE: 'demo', HOST: '0.0.0.0' })).toThrow();
   });
+  it('keeps finance disabled unless the isolated demo is selected', () => {
+    expect(() => config({ NODE_ENV: 'production', AUTH_MODE: 'demo', FINANCIAL_MODE: 'synthetic' })).toThrow();
+    expect(() => config({ NODE_ENV: 'development', AUTH_MODE: 'oidc', FINANCIAL_MODE: 'synthetic',
+      OIDC_ISSUER: 'https://issuer.example', OIDC_AUDIENCE: 'api', OIDC_JWKS_URL: 'https://issuer.example/jwks' })).toThrow();
+  });
   it('requires exact HTTPS origins in production', () => {
     expect(() => config({ NODE_ENV: 'production', AUTH_MODE: 'oidc', OIDC_ISSUER: 'https://issuer.example',
       OIDC_AUDIENCE: 'api', OIDC_JWKS_URL: 'https://issuer.example/jwks', CORS_ORIGINS: 'http://localhost:5173' })).toThrow();

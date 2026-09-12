@@ -4,6 +4,7 @@ export interface Config {
   environment: 'development' | 'test' | 'production'; host: string; port: number;
   databaseUrl?: string; authMode: 'oidc' | 'demo'; issuer?: string; audience?: string;
   jwksUrl?: string; corsOrigins: string[]; docs: boolean; logger: boolean;
+  financialMode: 'disabled' | 'synthetic';
 }
 export function config(env = process.env): Config {
   const environment = env.NODE_ENV ?? 'development';
@@ -13,6 +14,10 @@ export function config(env = process.env): Config {
   const host = env.HOST ?? '127.0.0.1';
   if (authMode === 'demo' && (environment === 'production' || !['127.0.0.1', '::1', 'localhost'].includes(host)))
     throw new Error('Demo authentication is restricted to local non-production use');
+  const financialMode = env.FINANCIAL_MODE ?? 'disabled';
+  if (!['disabled','synthetic'].includes(financialMode)) throw new Error('Invalid FINANCIAL_MODE');
+  if (financialMode === 'synthetic' && (environment === 'production' || authMode !== 'demo'))
+    throw new Error('Synthetic finance is restricted to non-production demo authentication');
   if (authMode === 'oidc') {
     if (!env.OIDC_ISSUER || !env.OIDC_AUDIENCE || !env.OIDC_JWKS_URL) throw new Error('OIDC configuration is required');
     for (const value of [env.OIDC_ISSUER, env.OIDC_JWKS_URL])
@@ -30,5 +35,5 @@ export function config(env = process.env): Config {
   return { environment: environment as Config['environment'], host, port, authMode: authMode as Config['authMode'],
     databaseUrl: env.DATABASE_URL, issuer: env.OIDC_ISSUER, audience: env.OIDC_AUDIENCE, jwksUrl: env.OIDC_JWKS_URL,
     corsOrigins, docs: env.DOCS_ENABLED === 'true' || (environment !== 'production' && env.DOCS_ENABLED !== 'false'),
-    logger: environment !== 'test' };
+    logger: environment !== 'test', financialMode: financialMode as Config['financialMode'] };
 }

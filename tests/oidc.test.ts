@@ -8,7 +8,8 @@ describe('OIDC access token verification', () => {
     const { publicKey, privateKey } = await generateKeyPair('RS256');
     const cfg: Config = { environment: 'test', host: '127.0.0.1', port: 3000,
       authMode: 'oidc', issuer: 'https://issuer.example', audience: 'afridict-api',
-      jwksUrl: 'https://issuer.example/jwks', corsOrigins: [], docs: false, logger: false };
+      jwksUrl: 'https://issuer.example/jwks', corsOrigins: [], docs: false, logger: false,
+      financialMode: 'disabled' };
     const verifier = oidcAuthenticator(cfg, async () => publicKey);
     const now = Math.floor(Date.now() / 1000);
     const sign = (audience: string, expiry: number) => new SignJWT({ sub: 'synthetic-subject', iat: now })

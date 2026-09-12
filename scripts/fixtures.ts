@@ -6,12 +6,14 @@ import { AppError } from '../src/platform/errors.js';
 import type { Config } from '../src/platform/config.js';
 
 export const demoConfig: Config = { environment: 'test', host: '127.0.0.1', port: 3000,
-  authMode: 'demo', corsOrigins: ['http://localhost:5173','http://localhost:3001'], docs: true, logger: false };
+  authMode: 'demo', corsOrigins: ['http://localhost:5173','http://localhost:3001'], docs: true, logger: false,
+  financialMode: 'synthetic' };
 export const personas: Record<string, string[]> = {
   trader: ['user'], creator: ['user','market_creator'], other_creator: ['user','market_creator'],
   approver: ['user','market_approver'], legal: ['user','legal_reviewer'], integrity: ['user','integrity_reviewer'],
   resolution: ['user','resolution_reviewer'], compliance: ['user','compliance_officer'],
   other_compliance: ['user','compliance_officer'], proposer: ['user','market_proposer'], auditor: ['user','auditor'],
+  finance: ['user','finance_operator'],
 };
 export const demoAuth: Authenticator = { async verify(token) {
   const name = token.startsWith('demo.') ? token.slice(5) : '';
@@ -49,7 +51,11 @@ export async function seedDemo(db: Database) {
       await sql.query('INSERT INTO accounts(id,issuer,subject,jurisdiction,roles) VALUES ($1,$2,$3,$4,$5)',
         [id, 'urn:afridict:synthetic-demo', name, 'ZZ', roles]);
       await sql.query("INSERT INTO eligibility(account_id,status,policy_version) VALUES ($1,'pending','demo:unreviewed')", [id]);
+      await sql.query(`INSERT INTO smart_accounts(owner_id,chain_id,address,status,recovery_policy_ref)
+        VALUES ($1,46630,$2,'active','synthetic-demo-only')`,[id,`0x${id.replace(/-/g,'').padStart(40,'0')}`]);
     }
+    await sql.query(`INSERT INTO financial_assets(code,scale,synthetic,approved,evidence_ref)
+      VALUES ('DEMO',6,true,true,'synthetic-demo-only')`);
     for (const type of ['binary','categorical','scalar']) await sql.query(`INSERT INTO market_templates(id,version,market_type,approved,evidence_ref)
       VALUES ($1,1,$2,true,'synthetic-demo-only')`, [`demo-${type}`, type]);
     await sql.query(`INSERT INTO country_policies(jurisdiction,category,policy_version,publication_allowed,evidence_ref)
@@ -63,6 +69,8 @@ export async function seedDemo(db: Database) {
       ['bond','demo:bond-v1'], ['payout','demo:payout-v1'], ['collateral','demo:collateral']])
       await sql.query(`INSERT INTO policy_registry(kind,policy_ref,approved,evidence_ref)
         VALUES ($1,$2,true,'synthetic-demo-only')`, [kind, ref]);
+    await sql.query(`INSERT INTO policy_registry(kind,policy_ref,approved,evidence_ref)
+      VALUES ('finality','demo:finality-v1',true,'synthetic-demo-only')`);
   });
   return ids;
 }

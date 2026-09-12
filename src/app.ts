@@ -5,7 +5,7 @@ import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { Type, type Static, type TSchema } from '@sinclair/typebox';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { Config } from './platform/config.js';
 import type { Database, Sql } from './platform/database.js';
 import { AppError, requireCondition } from './platform/errors.js';
@@ -13,10 +13,17 @@ import { command, hash, record } from './platform/commands.js';
 import { findAccount, hasRole, oidcAuthenticator, publicAccount, type Account, type Authenticator, type Principal } from './identity/auth.js';
 import { schemas, AccountSchema, EligibilitySchema, ErrorSchema, IdParams, IdempotencyHeaders,
   Terms, MarketSchema, ProposalSchema, ReviewSchema, ReviewCommand, VersionCommand, ListQuery,
-  Reason, EvidenceRef, EligibilityReviewSchema, Country, UUID, Timestamp, object, text, type MarketTerms } from './contracts.js';
+  Reason, EvidenceRef, EligibilityReviewSchema, Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
 import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket, mayReadDraft, publicMarket, publish, reviewMarket,
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
+import { financialSchemas, FinancialAssetSchema, BalanceSchema, DepositSchema, WithdrawalSchema,
+  ReconciliationSchema, StatementSchema, SmartAccountSchema } from './funding/contracts.js';
+import { applyPartnerDeposit, createDepositIntent, createWithdrawal, cancelWithdrawal, finalizeDeposit,
+  finalizeWithdrawal, markWithdrawalUncertain, publicDeposit, publicWithdrawal, submitWithdrawal,
+  type PartnerVerifier } from './funding/service.js';
+import { walletBalances } from './financial/ledger.js';
+import { reconcile } from './financial/reconciliation.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -24,18 +31,19 @@ type Work = (context: Context) => Promise<{ status: number; body: unknown }>;
 const errorResponses: Record<number, TSchema> = Object.fromEntries([400,401,403,404,409,413,415,422,429,500,503]
   .map(code => [code, Type.Ref(ErrorSchema)]));
 function contract(id: string, tag: string, summary: string, description: string, response: TSchema,
-  options: { body?: TSchema; params?: TSchema; querystring?: TSchema; status?: number; public?: boolean; roles?: string[]; command?: boolean } = {}): FastifySchema {
+  options: { body?: TSchema; params?: TSchema; querystring?: TSchema; headers?: TSchema; status?: number; public?: boolean; roles?: string[]; command?: boolean } = {}): FastifySchema {
   return { operationId: id, tags: [tag], summary, description,
     security: options.public ? [] : [{ bearerAuth: [] }],
     ...(options.roles ? { 'x-required-roles': options.roles } : {}),
-    ...(options.command ? { headers: IdempotencyHeaders } : {}),
+    ...(options.command ? { headers: IdempotencyHeaders } : options.headers ? {headers:options.headers} : {}),
     ...(options.body ? { body: options.body } : {}), ...(options.params ? { params: options.params } : {}),
     ...(options.querystring ? { querystring: options.querystring } : {}),
     response: { [options.status ?? 200]: response, ...errorResponses } } as FastifySchema;
 }
 
-export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator) {
+export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier) {
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
+  if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
   const app = Fastify({ logger: cfg.logger ? { level: 'info', redact: ['req.headers.authorization', 'req.headers.cookie', 'req.body', 'res.headers.set-cookie'] } : false,
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => `req_${randomUUID()}`,
@@ -47,13 +55,13 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute', global: true,
     errorResponseBuilder: req => ({ code: 'RATE_LIMITED', message: 'Request limit exceeded. Retry after the indicated delay.', request_id: req.id }) });
   await app.register(swagger, { openapi: { openapi: '3.1.1',
-    info: { title: 'Afridict Backend API', version: '0.2.0', description: 'Identity and market-governance API. No money movement, chain deployment, trading, or resolution is implemented in this release. Production access requires configured identity and approved policy registries. Use npm run demo for an isolated synthetic frontend environment.' },
+    info: { title: 'Afridict Backend API', version: '0.3.0', description: 'Identity, governance and financial workflow API. Financial commands execute only in the isolated synthetic demo; no real payment partner, chain indexer, custody activation, trading or resolution is available. Production access requires approved adapters and governance.' },
     servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development only; not a production address' }],
-    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit'].map(name => ({ name, description: `${name} operations` })),
+    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic'].map(name => ({ name, description: `${name} operations` })),
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
       description: 'OIDC access token verified against configured issuer, audience and JWKS. Roles come from server-owned account records. Demo mode accepts only synthetic demo.<persona> selectors; those never work in production.' } } },
   }, refResolver: { buildLocalReference: json => String(json.$id) } });
-  for (const schema of schemas) app.addSchema(schema);
+  for (const schema of [...schemas,...financialSchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
   app.addHook('onResponse', async (request, reply) => {
@@ -167,6 +175,176 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     await record(sql, { actor: actor.id, authority: 'compliance_officer', action: 'eligibility.decided', resource: before.id,
       request: request.id, reason: b.reason, evidence: before.evidence_ref, before: { status: before.status, proposer_id: before.proposer_id }, after: row, result: b.decision });
     return { status: 200, body: row };
+  }));
+
+  const syntheticFinance=()=>requireCondition(cfg.financialMode==='synthetic',503,'FINANCIAL_INTEGRATION_PENDING',
+    'Funding and withdrawal integrations are not active.');
+  app.get('/v1/smart-account',{schema:contract('getSmartAccount','Portfolio','Read your embedded smart-account status',
+    'Returns public address and workflow status for the caller only. Recovery remains owned by the configured identity provider; no session keys or recovery data are returned.',
+    Type.Ref(SmartAccountSchema))},async req=>{
+    const {a}=await authenticated(req);
+    const row=(await db.query<{chain_id:string;address:string;status:string}>('SELECT chain_id::text,address,status FROM smart_accounts WHERE owner_id=$1',[a.id])).rows[0];
+    requireCondition(row,404,'SMART_ACCOUNT_NOT_PROVISIONED','No smart account has been provisioned.');
+    return {...row,recovery:'identity_provider',financial_mode:cfg.financialMode};
+  });
+  app.get('/v1/financial-assets',{schema:contract('listFinancialAssets','Funding','List configured collateral assets',
+    'Shows configured asset units. funding_enabled and withdrawal_enabled are true only in the isolated synthetic demo; an approved real asset and partner are not configured.',
+    object({items:Type.Array(Type.Ref(FinancialAssetSchema))}))},async req=>{
+    await authenticated(req);
+    const rows=(await db.query<{code:string;scale:number;synthetic:boolean}>('SELECT code,scale,synthetic FROM financial_assets WHERE approved=true ORDER BY code')).rows;
+    return {items:rows.map(row=>({...row,funding_enabled:cfg.financialMode==='synthetic'&&row.synthetic,
+      withdrawal_enabled:cfg.financialMode==='synthetic'&&row.synthetic}))};
+  });
+  app.post('/v1/webhooks/funding/:partnerId',{schema:contract('receiveFundingPartnerEvent','Funding','Receive a signed funding-partner event',
+    'Verifies the partner signature over event ID, timestamp and canonical payload before changing state. Duplicate identical events produce one effect. This endpoint records partner confirmation only; it never credits available collateral. The adapter is unavailable until explicitly configured.',
+    object({accepted:Type.Literal(true)}),{public:true,status:202,
+      params:object({partnerId:Type.String({pattern:'^[a-z0-9][a-z0-9_-]{1,63}$'})}),
+      headers:Type.Object({'x-partner-event-id':Type.String({minLength:1,maxLength:128,pattern:'^[A-Za-z0-9._:-]+$'}),
+        'x-partner-timestamp':Type.String({pattern:'^[0-9]{10}$'}),
+        'x-partner-signature':Type.String({pattern:'^sha256=[a-f0-9]{64}$'})},{additionalProperties:true}),
+      body:object({event_type:Type.Literal('deposit.confirmed'),occurred_at:Timestamp,intent_id:UUID,
+        partner_reference:Type.String({minLength:1,maxLength:200}),asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'}),amount_minor:Uint})})},
+    async(request,reply)=>{
+      requireCondition(partnerVerifier,503,'PARTNER_ADAPTER_UNAVAILABLE','The funding partner adapter is not configured.');
+      const params=request.params as {partnerId:string},headers=request.headers as Record<string,string>,body=request.body as {
+        event_type:'deposit.confirmed';occurred_at:string;intent_id:string;partner_reference:string;asset:string;amount_minor:string};
+      const eventId=headers['x-partner-event-id']!,timestamp=headers['x-partner-timestamp']!,signature=headers['x-partner-signature']!;
+      requireCondition(await partnerVerifier.verify({partnerId:params.partnerId,eventId,timestamp,signature,payload:body}),
+        401,'INVALID_PARTNER_SIGNATURE','A valid partner signature is required.');
+      await db.transaction(sql=>applyPartnerDeposit(sql,{partnerId:params.partnerId,eventId,occurredAt:body.occurred_at,
+        intentId:body.intent_id,reference:body.partner_reference,asset:body.asset,amount:body.amount_minor},request.id));
+      return reply.code(202).send({accepted:true});
+    });
+  app.get('/v1/balances',{schema:contract('listCollateralBalances','Portfolio','Read available and reserved collateral',
+    'Off-chain ledger projection. Pending partner deposits do not create spendable collateral. spendable is false because trading is not active.',
+    object({items:Type.Array(Type.Ref(BalanceSchema))}))},async req=>{
+    const {a}=await authenticated(req); return {items:(await walletBalances(db,a.id)).map(balance=>({...balance,spendable:false}))};
+  });
+  app.post('/v1/deposit-intents',{schema:contract('createDepositIntent','Funding','Create a synthetic deposit intent',
+    'Available only in the loopback synthetic demo. Returns no payment instructions or quote. Partner confirmation alone cannot credit available collateral. A future approved partner adapter and finalized chain observation are required.',
+    Type.Ref(DepositSchema),{command:true,status:201,body:object({asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'}),
+      target_minor:Uint,rail:text('Configured rail identifier, synthetic in this environment.',80)})})},
+  run([],async({sql,actor,request})=>{
+    syntheticFinance(); const body=request.body as {asset:string;target_minor:string;rail:string};
+    return {status:201,body:await createDepositIntent(sql,{owner:actor.id,asset:body.asset,target:body.target_minor,rail:body.rail},request.id)};
+  }));
+  app.get('/v1/deposit-intents',{schema:contract('listDepositIntents','Funding','List your deposit workflows',
+    'Pages use stable opaque ID ordering. Partner confirmed is pending, not a balance credit. Use the state to show progress, exception and retry guidance.',
+    object({items:Type.Array(Type.Ref(DepositSchema)),next_cursor:Type.Union([Type.String(),Type.Null()])}),
+    {querystring:object({limit:Type.Optional(Type.Integer({minimum:1,maximum:100,default:20})),cursor:Type.Optional(UUID)})})},async req=>{
+    const {a}=await authenticated(req),q=req.query as {limit?:number;cursor?:string},limit=q.limit??20;
+    const rows=(await db.query<Parameters<typeof publicDeposit>[0]>(`SELECT * FROM deposit_intents WHERE owner_id=$1 AND ($2::uuid IS NULL OR id<$2::uuid)
+      ORDER BY id DESC LIMIT $3`,[a.id,q.cursor??null,limit+1])).rows;
+    const page=rows.slice(0,limit);
+    return {items:page.map(publicDeposit),next_cursor:rows.length>limit?page.at(-1)!.id:null};
+  });
+  app.get('/v1/deposit-intents/:id',{schema:contract('getDepositIntent','Funding','Read your deposit workflow',
+    'The state is authoritative for this service workflow only; it does not prove external partner or chain finality.',
+    Type.Ref(DepositSchema),{params:IdParams})},async req=>{
+    const {a}=await authenticated(req),row=(await db.query<Parameters<typeof publicDeposit>[0]>('SELECT * FROM deposit_intents WHERE id=$1 AND owner_id=$2',[id(req),a.id])).rows[0];
+    requireCondition(row,404,'NOT_FOUND','Deposit intent not found.'); return publicDeposit(row);
+  });
+  app.post('/v1/withdrawals',{schema:contract('requestWithdrawal','Funding','Reserve collateral for a synthetic withdrawal',
+    'Only the synthetic demo can create this reservation. Requires approved eligibility and finalized available collateral. No external transfer is submitted. The reservation shares the same account/asset lock as CLOB, AMM and RFQ.',
+    Type.Ref(WithdrawalSchema),{command:true,status:201,body:object({asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'}),
+      amount_minor:Uint,destination_ref:EvidenceRef,rail:text('Configured withdrawal rail, synthetic in this environment.',80)})})},
+  run([],async({sql,actor,request})=>{
+    syntheticFinance(); const b=request.body as {asset:string;amount_minor:string;destination_ref:string;rail:string};
+    return {status:201,body:await createWithdrawal(sql,{owner:actor.id,asset:b.asset,amount:b.amount_minor,
+      destination:b.destination_ref,rail:b.rail},request.id)};
+  }));
+  app.get('/v1/withdrawals',{schema:contract('listWithdrawals','Funding','List your withdrawal workflows',
+    'Pages use stable opaque ID ordering and return only your reservations and terminal states. Submitted or uncertain withdrawals remain held until independent finality or recovery is established.',
+    object({items:Type.Array(Type.Ref(WithdrawalSchema)),next_cursor:Type.Union([Type.String(),Type.Null()])}),
+    {querystring:object({limit:Type.Optional(Type.Integer({minimum:1,maximum:100,default:20})),cursor:Type.Optional(UUID)})})},async req=>{
+    const {a}=await authenticated(req),q=req.query as {limit?:number;cursor?:string},limit=q.limit??20;
+    const rows=(await db.query<Parameters<typeof publicWithdrawal>[0]>(`SELECT * FROM withdrawals WHERE owner_id=$1 AND ($2::uuid IS NULL OR id<$2::uuid)
+      ORDER BY id DESC LIMIT $3`,[a.id,q.cursor??null,limit+1])).rows;
+    const page=rows.slice(0,limit);
+    return {items:page.map(publicWithdrawal),next_cursor:rows.length>limit?page.at(-1)!.id:null};
+  });
+  app.get('/v1/withdrawals/:id',{schema:contract('getWithdrawal','Funding','Read your withdrawal workflow',
+    'Only the owner can read this workflow. An unknown or other-account ID returns not found.',Type.Ref(WithdrawalSchema),{params:IdParams})},async req=>{
+    const {a}=await authenticated(req),row=(await db.query<Parameters<typeof publicWithdrawal>[0]>('SELECT * FROM withdrawals WHERE id=$1 AND owner_id=$2',[id(req),a.id])).rows[0];
+    requireCondition(row,404,'NOT_FOUND','Withdrawal not found.'); return publicWithdrawal(row);
+  });
+  app.post('/v1/withdrawals/:id/cancel',{schema:contract('cancelWithdrawal','Funding','Cancel an unsubmitted synthetic withdrawal',
+    'Only a reserved withdrawal with no external submission may be cancelled. Unknown submission status must remain reserved; never release collateral on a timeout alone.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,body:object({reason:Reason})})},
+  run([],async({sql,actor,request})=>{
+    syntheticFinance(); return {status:200,body:await cancelWithdrawal(sql,actor.id,id(request),request.id)};
+  }));
+  app.get('/v1/statements',{schema:contract('listStatementEntries','Portfolio','Read your financial journal entries',
+    'Append-only entries for your own ledger accounts, ordered by journal creation time then entry ID. Exact signed direction and amount are returned; another user\'s entries are never exposed.',
+    object({items:Type.Array(Type.Ref(StatementSchema))}),
+    {querystring:object({limit:Type.Optional(Type.Integer({minimum:1,maximum:100,default:20}))})})},async req=>{
+    const {a}=await authenticated(req),limit=(req.query as {limit?:number}).limit??20;
+    const rows=(await db.query<{id:string;effect_id:string;kind:string;reference_id:string;asset:string;bucket:string;
+      direction:string;amount_minor:string;created_at:Date}>(`SELECT e.id,j.effect_id,j.kind,j.reference_id,a.asset_code AS asset,a.bucket,
+      CASE WHEN (a.normal_side='credit' AND e.credit>0) OR (a.normal_side='debit' AND e.debit>0)
+        THEN 'increase' ELSE 'decrease' END AS direction,
+      GREATEST(e.debit,e.credit)::text AS amount_minor,j.created_at FROM ledger_entries e
+      JOIN ledger_accounts a ON a.id=e.account_id JOIN ledger_journals j ON j.id=e.journal_id
+      WHERE a.owner_id=$1 ORDER BY j.created_at DESC,e.id DESC LIMIT $2`,[a.id,limit])).rows;
+    return {items:rows.map(row=>({...row,created_at:new Date(row.created_at).toISOString()}))};
+  });
+  app.post('/v1/admin/reconciliation-runs',{schema:contract('runFinancialReconciliation','Finance','Compare recorded ledger, partner and chain observations',
+    'Finance-only. Creates owned exceptions for mismatches. This compares stored records; independent partner statements and chain scanning are still required before real-money activation.',
+    Type.Ref(ReconciliationSchema),{command:true,roles:['finance_operator'],status:201,
+      body:object({asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'})})})},
+  run(['finance_operator'],async({sql,actor,request})=>{
+    const asset=(request.body as {asset:string}).asset;
+    return {status:201,body:await reconcile(sql,asset,actor.id,request.id)};
+  }));
+  app.post('/v1/admin/synthetic/deposits/:id/partner-confirm',{schema:contract('simulatePartnerDepositConfirmation','Synthetic','Simulate a matching partner deposit event',
+    'Loopback demo only. Generates a synthetic verified-partner event for frontend workflow testing. This operation is unavailable in production and is not a payment integration.',
+    Type.Ref(DepositSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({asset:Type.String(),amount_minor:Uint})})},
+  run(['finance_operator'],async({sql,actor,request})=>{
+    syntheticFinance(); const b=request.body as {asset:string;amount_minor:string},event=randomUUID();
+    await applyPartnerDeposit(sql,{partnerId:'synthetic-demo',eventId:event,occurredAt:new Date().toISOString(),
+      intentId:id(request),reference:`demo:${event}`,asset:b.asset,amount:b.amount_minor},request.id);
+    const row=(await sql.query<Parameters<typeof publicDeposit>[0]>('SELECT * FROM deposit_intents WHERE id=$1',[id(request)])).rows[0]!;
+    await record(sql,{actor:actor.id,authority:'synthetic_finance_operator',action:'deposit.synthetic_partner_event',resource:id(request),
+      request:request.id,reason:'Frontend demonstration only',after:{state:row.state}});
+    return {status:200,body:publicDeposit(row)};
+  }));
+  app.post('/v1/admin/synthetic/deposits/:id/finalize',{schema:contract('simulateFinalizedDeposit','Synthetic','Simulate a finalized matching chain deposit',
+    'Loopback demo only. Adds a synthetic chain observation under the demo finality policy and posts the balanced ledger journal. Unavailable in production.',
+    Type.Ref(DepositSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({})})},
+  run(['finance_operator'],async({sql,actor,request})=>{
+    syntheticFinance();
+    const row=(await sql.query<{owner_id:string;asset_code:string;partner_minor:string}>('SELECT * FROM deposit_intents WHERE id=$1',[id(request)])).rows[0];
+    requireCondition(row,404,'NOT_FOUND','Deposit intent not found.');
+    const wallet=(await sql.query<{chain_id:string;address:string}>('SELECT * FROM smart_accounts WHERE owner_id=$1',[row.owner_id])).rows[0]!;
+    const digest=(suffix:string)=>`0x${createHash('sha256').update(`${id(request)}:${suffix}`).digest('hex')}`;
+    return {status:200,body:await finalizeDeposit(sql,{intentId:id(request),chainId:Number(wallet.chain_id),blockNumber:'1',
+      blockHash:digest('block'),transactionHash:digest('transaction'),logIndex:0,accountAddress:wallet.address,
+      asset:row.asset_code,amount:row.partner_minor,finalityPolicyRef:'demo:finality-v1'},actor.id,request.id)};
+  }));
+  app.post('/v1/admin/synthetic/withdrawals/:id/submit',{schema:contract('simulateWithdrawalSubmission','Synthetic','Simulate withdrawal submission',
+    'Loopback demo only. Marks a reserved withdrawal as submitted without moving funds. A real adapter would supply its stable provider reference.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({})})},
+  run(['finance_operator'],async({sql,actor,request})=>{
+    syntheticFinance(); return {status:200,body:await submitWithdrawal(sql,id(request),`demo:${id(request)}`,actor.id,request.id)};
+  }));
+  app.post('/v1/admin/synthetic/withdrawals/:id/uncertain',{schema:contract('simulateUncertainWithdrawal','Synthetic','Simulate an unknown withdrawal result',
+    'Loopback demo only. Keeps all collateral reserved while showing the frontend an external timeout or ambiguous response.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({})})},
+  run(['finance_operator'],async({sql,actor,request})=>{
+    syntheticFinance(); return {status:200,body:await markWithdrawalUncertain(sql,id(request),actor.id,request.id)};
+  }));
+  app.post('/v1/admin/synthetic/withdrawals/:id/finalize',{schema:contract('simulateFinalizedWithdrawal','Synthetic','Simulate finalized withdrawal settlement',
+    'Loopback demo only. Consumes the held reservation and reduces recorded escrow after a synthetic finality observation.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({})})},
+  run(['finance_operator'],async({sql,actor,request})=>{
+    syntheticFinance();
+    const row=(await sql.query<{owner_id:string}>('SELECT owner_id FROM withdrawals WHERE id=$1',[id(request)])).rows[0];
+    requireCondition(row,404,'NOT_FOUND','Withdrawal not found.');
+    const wallet=(await sql.query<{chain_id:string;address:string}>('SELECT * FROM smart_accounts WHERE owner_id=$1',[row.owner_id])).rows[0]!;
+    const digest=(suffix:string)=>`0x${createHash('sha256').update(`${id(request)}:${suffix}`).digest('hex')}`;
+    return {status:200,body:await finalizeWithdrawal(sql,{withdrawalId:id(request),chainId:Number(wallet.chain_id),
+      blockNumber:'2',blockHash:digest('block'),transactionHash:digest('transaction'),logIndex:0,
+      accountAddress:wallet.address,finalityPolicyRef:'demo:finality-v1'},actor.id,request.id)};
   }));
 
   app.get('/v1/market-templates', { schema: contract('listMarketTemplates','Markets','List approved market templates','Returns only approved registry entries. Production starts with no approved templates; the demo seeds explicitly synthetic templates. Template approval is an operational governance decision.', object({ items: Type.Array(object({ id: Type.String(), version: Type.Integer(), market_type: Type.String({ enum: ['binary','categorical','scalar'] }) })) }), { public: true }) }, async () => ({ items: (await db.query('SELECT id,version,market_type FROM market_templates WHERE approved=true ORDER BY id,version')).rows }));
