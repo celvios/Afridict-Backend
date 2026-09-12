@@ -1,0 +1,21 @@
+# Markdown remains local under the repository owner's publishing policy.
+*.[mM][dD]
+
+# Dependencies and generated artifacts
+node_modules/
+dist/
+coverage/
+.cache/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

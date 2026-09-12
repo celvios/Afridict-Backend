@@ -1,0 +1,63 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Afridict Backend API",
+    "version": "0.1.0",
+    "description": "Draft contract foundation for Afridict. No endpoints are implemented or declared yet. HTTP operations will be added as their domain semantics and authorization requirements are reviewed. This artifact is not a production API release. Financial values use exact integer strings with explicit units; pending execution must remain distinguishable from finalized settlement."
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "UnsignedIntegerString": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]*)$",
+        "description": "Exact non-negative integer serialized as a decimal string. Never parse financial values through JavaScript Number. Every containing field must define its asset or unit, scale, maximum value and rounding rule before use in an operation.",
+        "examples": ["0", "1000000", "9007199254740993"]
+      },
+      "RequestId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9_-]+$",
+        "description": "Opaque server-issued request correlation identifier. Contains no personal information or credentials. It is not an idempotency key.",
+        "examples": ["req_example_001"]
+      },
+      "ApiError": {
+        "type": "object",
+        "required": ["code", "message", "request_id"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$",
+            "description": "Stable machine-readable error code. Each operation must document its possible codes and recovery behavior. Clients must handle unknown codes safely.",
+            "examples": ["VALIDATION_FAILED"]
+          },
+          "message": {
+            "type": "string",
+            "description": "Safe human-readable explanation. Clients must not branch on this text. Must not expose stack traces, raw provider payloads, identity evidence or secrets.",
+            "examples": ["The request does not satisfy the operation's validation rules."]
+          },
+          "request_id": { "$ref": "#/components/schemas/RequestId" }
+        },
+        "description": "Shared draft error body. Resource-specific validation details, HTTP status mappings and retry behavior must be defined per operation. A transport failure does not establish that a financial command failed."
+      }
+    },
+    "headers": {
+      "RequestId": {
+        "description": "Server-issued request correlation identifier, returned as X-Request-Id. Echoed as request_id in error bodies.",
+        "schema": { "$ref": "#/components/schemas/RequestId" }
+      }
+    }
+  },
+  "x-contract-status": "draft-components-only",
+  "x-operation-review-requirements": [
+    "Stable operationId, purpose, authorization scopes and resource-level access rules",
+    "Validated request and response schemas with synthetic success and error examples",
+    "Exact financial units, scale, domain bounds and rounding rules",
+    "Explicit pending and terminal states with polling or event recovery guidance",
+    "Idempotency scope, equivalence, retention, concurrency and conflict behavior for commands",
+    "Pagination, filtering, ordering and quotas where applicable",
+    "HTTP status mappings, stable error codes, request IDs and safe retry guidance",
+    "Mock fixtures, generated client types and server conformance verification"
+  ]
+}
