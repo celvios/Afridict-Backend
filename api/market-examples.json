@@ -1,0 +1,210 @@
+{
+  "synthetic": true,
+  "examples": [
+    {
+      "question": "Synthetic binary demonstration: what rainfall result will the example station report?",
+      "market_type": "binary",
+      "template_id": "demo-binary",
+      "template_version": 1,
+      "outcomes": [
+        {
+          "id": "yes",
+          "label": "Yes"
+        },
+        {
+          "id": "no",
+          "label": "No"
+        }
+      ],
+      "category": "weather",
+      "jurisdictions": [
+        "ZZ"
+      ],
+      "open_at": "2099-01-01T00:00:00.000Z",
+      "trading_cutoff": "2099-01-02T00:00:00.000Z",
+      "expected_event_at": "2099-01-03T00:00:00.000Z",
+      "resolution_deadline": "2099-01-10T00:00:00.000Z",
+      "resolution": {
+        "criteria": "Synthetic policy only: use the named daily rainfall edition and the selected outcome boundaries.",
+        "timezone": "Africa/Lagos",
+        "method": "bonded_proposal",
+        "primary_source": {
+          "name": "Synthetic primary source",
+          "uri": "https://example.com/synthetic/primary"
+        },
+        "fallback_sources": [
+          {
+            "name": "Synthetic fallback source",
+            "uri": "https://example.org/synthetic/fallback"
+          }
+        ],
+        "correction_rule": "Use corrections received before the challenge window ends.",
+        "cancellation_rule": "Cancel under the published payout policy when no valid observation exists by the deadline.",
+        "invalid_rule": "Use the approved invalid-outcome payout vector when evidence cannot resolve the question.",
+        "challenge_window_seconds": 86400,
+        "timelock_seconds": 3600,
+        "panel_size": 3,
+        "adjudication_threshold": 2,
+        "adjudicator_policy_ref": "demo:adjudication-v1",
+        "bond_policy_ref": "demo:bond-v1",
+        "payout_policy_ref": "demo:payout-v1"
+      },
+      "risk": {
+        "classification": "standard",
+        "eligibility_policy_ref": "demo:eligibility-v1",
+        "exposure_limit_minor": "1000000",
+        "fee_bps": 100,
+        "settlement_asset_ref": "demo:collateral"
+      },
+      "liquidity": {
+        "clob": true,
+        "amm_enabled": false,
+        "rfq_enabled": true,
+        "subsidy_limit_minor": "0",
+        "inventory_limit_minor": "0",
+        "loss_limit_minor": "0",
+        "max_slippage_bps": 100
+      }
+    },
+    {
+      "question": "Synthetic categorical demonstration: what rainfall result will the example station report?",
+      "market_type": "categorical",
+      "template_id": "demo-categorical",
+      "template_version": 1,
+      "outcomes": [
+        {
+          "id": "dry",
+          "label": "Dry"
+        },
+        {
+          "id": "normal",
+          "label": "Normal"
+        },
+        {
+          "id": "wet",
+          "label": "Wet"
+        }
+      ],
+      "category": "weather",
+      "jurisdictions": [
+        "ZZ"
+      ],
+      "open_at": "2099-01-01T00:00:00.000Z",
+      "trading_cutoff": "2099-01-02T00:00:00.000Z",
+      "expected_event_at": "2099-01-03T00:00:00.000Z",
+      "resolution_deadline": "2099-01-10T00:00:00.000Z",
+      "resolution": {
+        "criteria": "Synthetic policy only: use the named daily rainfall edition and the selected outcome boundaries.",
+        "timezone": "Africa/Lagos",
+        "method": "bonded_proposal",
+        "primary_source": {
+          "name": "Synthetic primary source",
+          "uri": "https://example.com/synthetic/primary"
+        },
+        "fallback_sources": [
+          {
+            "name": "Synthetic fallback source",
+            "uri": "https://example.org/synthetic/fallback"
+          }
+        ],
+        "correction_rule": "Use corrections received before the challenge window ends.",
+        "cancellation_rule": "Cancel under the published payout policy when no valid observation exists by the deadline.",
+        "invalid_rule": "Use the approved invalid-outcome payout vector when evidence cannot resolve the question.",
+        "challenge_window_seconds": 86400,
+        "timelock_seconds": 3600,
+        "panel_size": 3,
+        "adjudication_threshold": 2,
+        "adjudicator_policy_ref": "demo:adjudication-v1",
+        "bond_policy_ref": "demo:bond-v1",
+        "payout_policy_ref": "demo:payout-v1"
+      },
+      "risk": {
+        "classification": "standard",
+        "eligibility_policy_ref": "demo:eligibility-v1",
+        "exposure_limit_minor": "1000000",
+        "fee_bps": 100,
+        "settlement_asset_ref": "demo:collateral"
+      },
+      "liquidity": {
+        "clob": true,
+        "amm_enabled": false,
+        "rfq_enabled": true,
+        "subsidy_limit_minor": "0",
+        "inventory_limit_minor": "0",
+        "loss_limit_minor": "0",
+        "max_slippage_bps": 100
+      }
+    },
+    {
+      "question": "Synthetic scalar demonstration: what rainfall result will the example station report?",
+      "market_type": "scalar",
+      "template_id": "demo-scalar",
+      "template_version": 1,
+      "outcomes": [
+        {
+          "id": "short",
+          "label": "Lower rainfall"
+        },
+        {
+          "id": "long",
+          "label": "Higher rainfall"
+        }
+      ],
+      "scalar_range": {
+        "lower": "0",
+        "upper": "10000",
+        "decimals": 2,
+        "unit": "millimetres"
+      },
+      "category": "weather",
+      "jurisdictions": [
+        "ZZ"
+      ],
+      "open_at": "2099-01-01T00:00:00.000Z",
+      "trading_cutoff": "2099-01-02T00:00:00.000Z",
+      "expected_event_at": "2099-01-03T00:00:00.000Z",
+      "resolution_deadline": "2099-01-10T00:00:00.000Z",
+      "resolution": {
+        "criteria": "Synthetic policy only: use the named daily rainfall edition and the selected outcome boundaries.",
+        "timezone": "Africa/Lagos",
+        "method": "bonded_proposal",
+        "primary_source": {
+          "name": "Synthetic primary source",
+          "uri": "https://example.com/synthetic/primary"
+        },
+        "fallback_sources": [
+          {
+            "name": "Synthetic fallback source",
+            "uri": "https://example.org/synthetic/fallback"
+          }
+        ],
+        "correction_rule": "Use corrections received before the challenge window ends.",
+        "cancellation_rule": "Cancel under the published payout policy when no valid observation exists by the deadline.",
+        "invalid_rule": "Use the approved invalid-outcome payout vector when evidence cannot resolve the question.",
+        "challenge_window_seconds": 86400,
+        "timelock_seconds": 3600,
+        "panel_size": 3,
+        "adjudication_threshold": 2,
+        "adjudicator_policy_ref": "demo:adjudication-v1",
+        "bond_policy_ref": "demo:bond-v1",
+        "payout_policy_ref": "demo:payout-v1"
+      },
+      "risk": {
+        "classification": "standard",
+        "eligibility_policy_ref": "demo:eligibility-v1",
+        "exposure_limit_minor": "1000000",
+        "fee_bps": 100,
+        "settlement_asset_ref": "demo:collateral"
+      },
+      "liquidity": {
+        "clob": true,
+        "amm_enabled": false,
+        "rfq_enabled": true,
+        "subsidy_limit_minor": "0",
+        "inventory_limit_minor": "0",
+        "loss_limit_minor": "0",
+        "max_slippage_bps": 100
+      }
+    }
+  ]
+}

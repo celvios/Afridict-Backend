@@ -1,0 +1,93 @@
+import { Type, type Static, type TSchema } from '@sinclair/typebox';
+
+const object = <T extends Record<string, TSchema>>(properties: T, options = {}) => Type.Object(properties, { additionalProperties: false, ...options });
+const text = (description: string, maxLength = 500) => Type.String({ minLength: 1, maxLength, description });
+export const UUID = Type.String({ format: 'uuid', description: 'Opaque resource identifier.' });
+export const Timestamp = Type.String({ format: 'date-time', description: 'RFC 3339 instant. Responses use UTC.' });
+export const Uint = Type.String({ pattern: '^(0|[1-9][0-9]*)$', maxLength: 78,
+  description: 'Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.' });
+const signed = Type.String({ pattern: '^(0|-?[1-9][0-9]*)$', maxLength: 78 });
+export const Country = Type.String({ pattern: '^[A-Z]{2}$', description: 'Country code. ZZ is reserved for the isolated synthetic demo.' });
+export const Roles = ['user', 'market_creator', 'market_approver', 'legal_reviewer', 'integrity_reviewer',
+  'resolution_reviewer', 'compliance_officer', 'market_proposer', 'auditor'] as const;
+export const ErrorSchema = object({
+  code: text('Stable error code; branch on this field, not message. Unknown codes must be handled safely.', 80),
+  message: text('Safe explanation without provider payloads, identity evidence, or stack traces.'),
+  request_id: text('Server-issued correlation identifier. Also returned in X-Request-Id.', 128),
+}, { $id: 'ApiError', description: 'Error response. A network timeout does not imply that a command failed. Retry a command using its original idempotency key and body.' });
+export const AccountSchema = object({ id: UUID, jurisdiction: Country,
+  status: Type.Union([Type.Literal('active'), Type.Literal('suspended')]),
+  roles: Type.Array(Type.String({ enum: [...Roles] })), created_at: Timestamp }, { $id: 'Account' });
+export const EligibilitySchema = object({ account_id: UUID,
+  status: Type.String({ enum: ['pending', 'eligible', 'restricted'] }), policy_version: text('Version of the applied eligibility policy.', 100),
+  trading_enabled: Type.Boolean({ description: 'False in this release: execution and real-money activation are not implemented.' }),
+  reason_codes: Type.Array(Type.String()), updated_at: Timestamp }, { $id: 'Eligibility' });
+export const EvidenceSource = object({ name: text('Published source name.', 150),
+  uri: Type.String({ format: 'uri', pattern: '^https://', maxLength: 2048, description: 'Evidence-source reference. This API never fetches supplied URLs.' }) });
+const scalar = object({ lower: signed, upper: signed, decimals: Type.Integer({ minimum: 0, maximum: 18 }),
+  unit: text('Unit for the scaled scalar observation.', 80) });
+export const Terms = object({
+  question: text('Precise public question. Do not include private or identifying information.'),
+  market_type: Type.String({ enum: ['binary', 'categorical', 'scalar'] }),
+  template_id: text('Approved template identifier.', 80), template_version: Type.Integer({ minimum: 1 }),
+  outcomes: Type.Array(object({ id: Type.String({ pattern: '^[a-z][a-z0-9_]{0,31}$' }), label: text('Outcome label.', 100) }), { minItems: 2, maxItems: 32 }),
+  scalar_range: Type.Optional(scalar),
+  category: Type.String({ pattern: '^[a-z][a-z0-9_-]{0,63}$' }),
+  jurisdictions: Type.Array(Country, { minItems: 1, maxItems: 54, uniqueItems: true }),
+  open_at: Timestamp, trading_cutoff: Timestamp, expected_event_at: Timestamp, resolution_deadline: Timestamp,
+  resolution: object({
+    criteria: text('Deterministic observation and outcome-selection criteria.', 4000),
+    timezone: text('IANA timezone used to interpret evidence.', 100),
+    method: Type.String({ enum: ['automated_adapter', 'bonded_proposal'] }),
+    primary_source: EvidenceSource, fallback_sources: Type.Array(EvidenceSource, { minItems: 1, maxItems: 5 }),
+    correction_rule: text('Handling of revisions and corrected results.', 2000),
+    cancellation_rule: text('Exact conditions for cancellation.', 2000),
+    invalid_rule: text('Exact invalid-market conditions and reference to the approved payout policy.', 2000),
+    challenge_window_seconds: Type.Integer({ minimum: 60, maximum: 2592000 }),
+    timelock_seconds: Type.Integer({ minimum: 60, maximum: 2592000 }),
+    panel_size: Type.Integer({ minimum: 3, maximum: 21 }),
+    adjudication_threshold: Type.Integer({ minimum: 2, maximum: 21 }),
+    adjudicator_policy_ref: text('Approved conflict, recusal, quorum and adjudication policy reference.', 200),
+    bond_policy_ref: text('Approved proposal/challenge bond and slashing policy reference.', 200),
+    payout_policy_ref: text('Approved payout policy including invalid outcomes and rounding.', 200),
+  }),
+  risk: object({ classification: Type.String({ enum: ['standard', 'elevated', 'high'] }),
+    eligibility_policy_ref: text('Jurisdiction and participant eligibility policy reference.', 200),
+    exposure_limit_minor: Uint, fee_bps: Type.Integer({ minimum: 0, maximum: 1000 }),
+    settlement_asset_ref: text('Collateral registry reference; this API does not select or approve a token.', 200) }),
+  liquidity: object({ clob: Type.Literal(true), amm_enabled: Type.Boolean(), rfq_enabled: Type.Boolean(),
+    subsidy_limit_minor: Uint, inventory_limit_minor: Uint, loss_limit_minor: Uint,
+    max_slippage_bps: Type.Integer({ minimum: 0, maximum: 10000 }) }),
+}, { $id: 'MarketTerms', description: 'Versioned public market policy. Binary requires yes/no outcomes; scalar requires short/long and scalar_range; categorical requires unique outcomes. Publication fixes the complete policy hash. No endpoint in this release activates trading.' });
+export type MarketTerms = Static<typeof Terms>;
+export const MarketSchema = object({ id: UUID, state: Type.String({ enum: ['draft', 'review', 'rejected', 'scheduled'] }),
+  version: Type.Integer({ minimum: 1 }), policy_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+  terms: Type.Ref(Terms), created_at: Timestamp, updated_at: Timestamp,
+  published_at: Type.Union([Timestamp, Type.Null()]), trading_enabled: Type.Literal(false),
+}, { $id: 'Market', description: 'Market metadata. Scheduled publication is distinct from chain creation and trading activation. Neither is performed by this release.' });
+export const ProposalSchema = object({ id: UUID, status: Type.String({ enum: ['submitted', 'accepted', 'rejected'],
+  description: 'accepted means an internal creator adopted the proposal into a draft. It does not mean the market is published or approved.' }),
+  terms: Type.Ref(Terms), created_at: Timestamp }, { $id: 'MarketProposal' });
+export const ReviewSchema = object({ id: UUID, market_id: UUID, market_version: Type.Integer(),
+  review_type: Type.String({ enum: ['product', 'legal', 'integrity', 'resolution'] }),
+  decision: Type.String({ enum: ['approved', 'rejected'] }), policy_hash: Type.String(), created_at: Timestamp,
+}, { $id: 'MarketReview' });
+export const EligibilityReviewSchema = object({ id: UUID, account_id: UUID,
+  decision: Type.String({ enum: ['eligible', 'restricted'] }), policy_version: Type.String(),
+  status: Type.String({ enum: ['pending', 'approved', 'rejected'] }), created_at: Timestamp,
+}, { $id: 'EligibilityReview' });
+export const Reason = text('Operational reason; do not include raw identity evidence or personal information.', 1000);
+export const EvidenceRef = Type.String({ pattern: '^[A-Za-z0-9][A-Za-z0-9:._/-]{0,199}$', description: 'Opaque reference to access-controlled evidence. Never send raw KYC data.' });
+export const VersionCommand = object({ expected_version: Type.Integer({ minimum: 1 }), reason: Reason });
+export const ReviewCommand = object({ expected_version: Type.Integer({ minimum: 1 }),
+  review_type: Type.String({ enum: ['product', 'legal', 'integrity', 'resolution'] }),
+  decision: Type.String({ enum: ['approved', 'rejected'] }), reason: Reason, evidence_ref: EvidenceRef });
+export const ListQuery = object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })),
+  cursor: Type.Optional(Type.String({ maxLength: 1024 })),
+  market_type: Type.Optional(Type.String({ enum: ['binary', 'categorical', 'scalar'] })),
+  category: Type.Optional(Type.String({ pattern: '^[a-z][a-z0-9_-]{0,63}$' })), jurisdiction: Type.Optional(Country) });
+export const IdParams = object({ id: UUID });
+export const IdempotencyHeaders = Type.Object({ 'idempotency-key': Type.String({ minLength: 8, maxLength: 128,
+  pattern: '^[A-Za-z0-9_-]+$', description: 'Unique per actor across all commands. Committed responses are retained indefinitely in this release. Same method, route, resource and canonical JSON body returns the original result; different content returns 409. Concurrent retries wait for the transaction or return 503; retry with the same key. Failed transactions may be retried. Authentication and authorization are rechecked on every retry.' }) }, { additionalProperties: true });
+export const schemas = [ErrorSchema, AccountSchema, EligibilitySchema, Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
+export { object, text };
