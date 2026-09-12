@@ -109,6 +109,21 @@ describe('identity and governance boundaries', () => {
     expect((await read('proposer','/v1/market-proposals')).json().items.some((p: { id: string }) => p.id === proposalId)).toBe(true);
     expect((await read('trader','/v1/market-proposals')).statusCode).toBe(403);
   });
+  it('rejects external proposals through an attributable, terminal decision', async () => {
+    const proposal = await write('proposer','POST','/v1/market-proposals',{ terms: terms('categorical') });
+    expect(proposal.statusCode, proposal.body).toBe(201);
+    const proposalId = proposal.json<{ id: string }>().id;
+    const url = `/v1/admin/market-proposals/${proposalId}/reject`;
+    const reason = { reason: 'Synthetic source hierarchy is inadequate', evidence_ref: 'test:proposal-review' };
+    expect((await write('proposer','POST',url,reason)).statusCode).toBe(403);
+    const rejected = await write('approver','POST',url,reason,'reject-proposal-once');
+    expect(rejected.statusCode, rejected.body).toBe(200);
+    expect(rejected.json().status).toBe('rejected');
+    expect((await write('approver','POST',url,reason,'reject-proposal-once')).body).toBe(rejected.body);
+    expect((await write('approver','POST',url,reason)).statusCode).toBe(409);
+    expect((await write('creator','POST','/v1/admin/markets',{ terms: terms('categorical'), source_proposal_id: proposalId })).statusCode).toBe(409);
+    expect((await read('proposer',`/v1/market-proposals/${proposalId}`)).json().status).toBe('rejected');
+  });
   it('rejects invalid policy, unapproved templates and market role bypass', async () => {
     const t = terms(); t.outcomes = [{ id: 'yes', label: 'Yes' }, { id: 'yes', label: 'No' }];
     expect((await write('creator','POST','/v1/admin/markets',{ terms: t })).json().code).toBe('INVALID_MARKET_POLICY');

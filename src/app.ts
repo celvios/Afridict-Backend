@@ -256,6 +256,22 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     const { a } = await authenticated(req); const row = (await db.query<{ proposer_id: string } & Record<string, unknown>>('SELECT * FROM market_proposals WHERE id=$1', [id(req)])).rows[0];
     requireCondition(row && (row.proposer_id === a.id || a.roles.some(r => ['market_creator','market_approver','auditor'].includes(r))), 404, 'NOT_FOUND', 'Proposal not found.'); return row;
   });
+  app.post('/v1/admin/market-proposals/:id/reject', { schema: contract('rejectMarketProposal','Proposals','Reject an external proposal with an audited reason','Requires market_approver and a different person from the proposer. Rejection is terminal for this proposal; a new submission receives a new identifier. It cannot mutate an adopted or published market.', Type.Ref(ProposalSchema),
+    { roles: ['market_approver'], params: IdParams, body: object({ reason: Reason, evidence_ref: EvidenceRef }), command: true }) },
+  run(['market_approver'], async ({ sql, actor, request }) => {
+    const b = request.body as { reason: string; evidence_ref: string };
+    const before = (await sql.query<{ id: string; proposer_id: string; status: string; terms: MarketTerms; created_at: Date }>(
+      'SELECT * FROM market_proposals WHERE id=$1 FOR UPDATE', [id(request)])).rows[0];
+    requireCondition(before, 404, 'NOT_FOUND', 'Proposal not found.');
+    requireCondition(before.proposer_id !== actor.id, 403, 'SEPARATION_OF_DUTIES', 'The proposer cannot reject their own submission.');
+    requireCondition(before.status === 'submitted', 409, 'VERSION_OR_STATE_CONFLICT', 'Only a submitted proposal may be rejected.');
+    const after = (await sql.query<{ id: string; status: string; terms: MarketTerms; created_at: Date }>(
+      "UPDATE market_proposals SET status='rejected' WHERE id=$1 RETURNING id,status,terms,created_at", [before.id])).rows[0]!;
+    await record(sql, { actor: actor.id, authority: 'market_approver', action: 'market_proposal.rejected',
+      resource: before.id, request: request.id, reason: b.reason, evidence: b.evidence_ref,
+      before: { status: before.status }, after: { status: after.status }, result: 'rejected' });
+    return { status: 200, body: after };
+  }));
   app.get('/v1/market-proposals', { schema: contract('listMarketProposals','Proposals','List governed market proposals','Proposers see only their own submissions; market creators, approvers and auditors see all. Pages sort by opaque UUID and may change when proposal status changes.', object({ items: Type.Array(Type.Ref(ProposalSchema)), next_cursor: Type.Union([Type.String(),Type.Null()]) }),
     { roles: ['market_proposer','market_creator','market_approver','auditor'],
       querystring: object({ limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 100, default: 20 })), cursor: Type.Optional(UUID), status: Type.Optional(Type.String({ enum: ['submitted','accepted','rejected'] })) }) }) }, async req => {
