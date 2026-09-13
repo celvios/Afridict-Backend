@@ -14,7 +14,7 @@ import { findAccount, hasRole, oidcAuthenticator, publicAccount, type Account, t
 import { schemas, AccountSchema, EligibilitySchema, ErrorSchema, IdParams, IdempotencyHeaders,
   Terms, MarketSchema, ProposalSchema, ReviewSchema, ReviewCommand, VersionCommand, ListQuery,
   Reason, EvidenceRef, EligibilityReviewSchema, CapabilitiesSchema, AuthenticationConfigurationSchema,
-  Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
+  RegistrationProfileSchema,Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
 import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket, mayReadDraft, publicMarket, publish, reviewMarket,
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
@@ -26,6 +26,7 @@ import { applyPartnerDeposit, createDepositIntent, createWithdrawal, cancelWithd
 import { walletBalances } from './financial/ledger.js';
 import { reconcile } from './financial/reconciliation.js';
 import { accountAssurance, evaluateCapabilities } from './identity/capabilities.js';
+import { registerProfile } from './identity/registration.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -141,6 +142,19 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     return reply.code(result.status).send(result.body);
   });
   app.get('/v1/me', { schema: contract('getCurrentAccount','Identity','Get the current account','Returns the caller account and server-assigned roles; provider subject and raw identity evidence are excluded.', Type.Ref(AccountSchema)) }, async req => publicAccount((await authenticated(req)).a));
+  app.post('/v1/registration/profile',{schema:contract('registerAccountProfile','Identity','Complete the Afridict registration profile',
+    'Call after the configured identity provider authenticates an email/password or Google account. Afridict stores names, normalized contact destinations and server-timestamped policy acceptance; it never receives the password or Google client secret. Contact ownership is verified separately.',Type.Ref(RegistrationProfileSchema),
+    {command:true,status:201,body:object({first_name:text('Given name.',100),last_name:text('Family name.',100),
+      email:Type.String({format:'email',maxLength:254}),phone_number:Type.String({minLength:8,maxLength:32}),
+      terms_version:text('Terms version presented to the user.',100),privacy_version:text('Privacy version presented to the user.',100),accepted:Type.Literal(true)})})},
+  run([],async({sql,actor,request})=>{
+    const body=request.body as {first_name:string;last_name:string;email:string;phone_number:string;terms_version:string;privacy_version:string};
+    const profile=await registerProfile(sql,actor,{...body,accepted_at:new Date().toISOString()});
+    await record(sql,{actor:actor.id,authority:'account_owner',action:'registration.profile_completed',resource:actor.id,
+      request:request.id,reason:'Accepted versioned registration policies',after:{terms_version:profile.terms_version,
+        privacy_version:profile.privacy_version,accepted_at:profile.accepted_at}});
+    return {status:201,body:profile};
+  }));
   app.get('/v1/me/capabilities', { schema: contract('getCurrentCapabilities','Identity','Get current action capabilities',
     'Returns normalized server-owned decisions and unmet requirements. Production money and trading commands must call this policy before activation; current financial commands remain isolated synthetic operations. Actions fail closed until provider, jurisdiction, risk and production gates are approved.', Type.Ref(CapabilitiesSchema)) }, async req => {
     const {a}=await authenticated(req); return evaluateCapabilities(await accountAssurance(db,a));

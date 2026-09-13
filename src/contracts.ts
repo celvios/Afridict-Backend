@@ -35,6 +35,10 @@ export const AuthenticationConfigurationSchema=object({
     client_id:Type.Union([Type.String(),Type.Null()]),scopes:Type.Array(Type.String()),pkce:Type.Literal('S256')}),
   registration_available:Type.Boolean(),account_linking:Type.Literal('verified_provider_subject'),
 },{$id:'AuthenticationConfiguration',description:'Public, non-secret authentication discovery. Google and password authentication are owned by one configured OIDC provider so Afridict does not create competing identities.'});
+export const RegistrationProfileSchema=object({first_name:text('Given name.',100),last_name:text('Family name.',100),
+  email:Type.String({format:'email',maxLength:254}),phone_number:Type.String({pattern:'^\\+[1-9][0-9]{7,14}$'}),
+  terms_version:text('Accepted terms version.',100),privacy_version:text('Accepted privacy policy version.',100),accepted_at:Timestamp,
+},{$id:'RegistrationProfile',description:'Account-owned registration profile. Password credentials remain exclusively with the configured identity provider.'});
 export const EvidenceSource = object({ name: text('Published source name.', 150),
   uri: Type.String({ format: 'uri', pattern: '^https://', maxLength: 2048, description: 'Evidence-source reference. This API never fetches supplied URLs.' }) });
 const scalar = object({ lower: signed, upper: signed, decimals: Type.Integer({ minimum: 0, maximum: 18 }),
@@ -103,5 +107,5 @@ export const IdParams = object({ id: UUID });
 export const IdempotencyHeaders = Type.Object({ 'idempotency-key': Type.String({ minLength: 8, maxLength: 128,
   pattern: '^[A-Za-z0-9_-]+$', description: 'Unique per actor across all commands. Committed responses are retained indefinitely in this release. Same method, route, resource and canonical JSON body returns the original result; different content returns 409. Concurrent retries wait for the transaction or return 503; retry with the same key. Failed transactions may be retried. Authentication and authorization are rechecked on every retry.' }) }, { additionalProperties: true });
 export const schemas = [ErrorSchema, AccountSchema, EligibilitySchema, CapabilitiesSchema, AuthenticationConfigurationSchema,
-  Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
+  RegistrationProfileSchema,Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
 export { object, text };

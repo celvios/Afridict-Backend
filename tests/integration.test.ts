@@ -69,6 +69,12 @@ describe('identity and governance boundaries', () => {
     const first = await write('new_user','POST','/v1/onboarding',{ jurisdiction: 'ZZ' },'new-user-onboard');
     expect(first.statusCode, first.body).toBe(200);
     expect(first.json()).toMatchObject({ roles: ['user'], jurisdiction: 'ZZ' });
+    const profile=await write('new_user','POST','/v1/registration/profile',{first_name:'New',last_name:'User',
+      email:'new.user@example.com',phone_number:'+2348031234567',terms_version:'test:terms-v1',
+      privacy_version:'test:privacy-v1',accepted:true});
+    expect(profile.statusCode,profile.body).toBe(201);
+    expect(profile.json()).toMatchObject({email:'new.user@example.com',phone_number:'+2348031234567',
+      terms_version:'test:terms-v1'});
     expect((await write('new_user','POST','/v1/onboarding',{ jurisdiction: 'ZZ' },'new-user-onboard')).body).toBe(first.body);
     const changed = await write('new_user','POST','/v1/onboarding',{ jurisdiction: 'NG' },'new-user-onboard');
     expect(changed.statusCode).toBe(409); expect(changed.json().code).toBe('IDEMPOTENCY_CONFLICT');
