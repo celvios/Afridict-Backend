@@ -22,7 +22,7 @@ import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket
 import { validateTerms } from './markets/domain.js';
 import { financialSchemas, FinancialAssetSchema, BalanceSchema, DepositSchema, WithdrawalSchema,
   ReconciliationSchema, StatementSchema, SmartAccountSchema,FiatWalletSchema,BankSchema,ResolvedBankAccountSchema,
-  FiatDepositSchema } from './funding/contracts.js';
+  FiatDepositSchema,AdminNgnPayoutSchema,TokenAssetSchema,AdminCryptoWithdrawalSchema } from './funding/contracts.js';
 import { applyPartnerDeposit, createDepositIntent, createWithdrawal, cancelWithdrawal, finalizeDeposit,
   finalizeWithdrawal, markWithdrawalUncertain, publicDeposit, publicWithdrawal, submitWithdrawal,
   type PartnerVerifier } from './funding/service.js';
@@ -33,7 +33,9 @@ import { registerProfile } from './identity/registration.js';
 import { checkContactCode,sendContactCode,type ContactDependencies } from './identity/contact.js';
 import { applyPersonaEvent,createIdentitySession,verifyPersonaSignature,type PersonaDependencies } from './identity/persona.js';
 import type { FiatDependencies } from './funding/swervpay.js';
-import {createFiatDeposit,getFiatDeposit,requestFiatPayout} from './funding/fiat.js';
+import {approveNgnPayout,completeNgnPayout,createFiatDeposit,getFiatDeposit,listNgnPayouts,requestNgnWithdrawal} from './funding/fiat.js';
+import {approveCryptoWithdrawal,createCryptoWithdrawal,listCryptoReviews,listCryptoWithdrawals,publicTokenAsset,
+  recordCryptoSubmission,type TokenAssetRow} from './funding/crypto.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -310,9 +312,9 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     object({items:Type.Array(Type.Ref(BalanceSchema))}))},async req=>{
     const {a}=await authenticated(req); return {items:(await walletBalances(db,a.id)).map(balance=>({...balance,spendable:false}))};
   });
-  app.get('/v1/wallets',{schema:contract('listFiatWallets','Portfolio','Read separate NGN and USD wallet projections',
-    'Returns both currency ledgers in integer minor units, including zero balances. Rail flags remain false until the corresponding provider and governance record are approved. NGN and USD are never netted or converted implicitly.',
-    object({items:Type.Array(Type.Ref(FiatWalletSchema),{minItems:2,maxItems:2})}))},async req=>{
+  app.get('/v1/wallets',{schema:contract('listFiatWallets','Portfolio','Read the NGN wallet projection',
+    'Returns the NGN ledger in integer kobo, including a zero balance. Rail flags remain false until provider and governance approval. Crypto stablecoin balances are contract-specific assets and are never represented as generic USD.',
+    object({items:Type.Array(Type.Ref(FiatWalletSchema),{minItems:1,maxItems:1})}))},async req=>{
     const {a}=await authenticated(req);
     const rows=(await db.query<{currency:'NGN'|'USD';scale:2;available_minor:string;reserved_minor:string;withdrawal_pending_minor:string;
       funding_enabled:boolean;withdrawal_enabled:boolean}>(`SELECT f.code AS currency,f.scale,
@@ -323,7 +325,7 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
       COALESCE(r.approved AND r.payouts_enabled,false) AS withdrawal_enabled
       FROM financial_assets f LEFT JOIN ledger_accounts la ON la.asset_code=f.code AND la.owner_id=$1
       LEFT JOIN ledger_entries le ON le.account_id=la.id LEFT JOIN fiat_rail_registry r ON r.asset_code=f.code AND r.provider='swervpay'
-      WHERE f.code IN ('NGN','USD') AND f.approved=true GROUP BY f.code,f.scale,r.approved,r.collections_enabled,r.payouts_enabled ORDER BY f.code`,[a.id])).rows;
+      WHERE f.code='NGN' AND f.approved=true GROUP BY f.code,f.scale,r.approved,r.collections_enabled,r.payouts_enabled`,[a.id])).rows;
     return {items:rows};
   });
   app.get('/v1/fiat/banks',{schema:contract('listFiatBanks','Funding','List banks currently reported by the fiat provider',
@@ -343,13 +345,13 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
       return {account_name:resolved.accountName,account_number:resolved.accountNumber,bank_code:resolved.bankCode,bank_name:resolved.bankName};
     });
   app.post('/v1/fiat/deposit-intents',{schema:contract('createFiatDepositIntent','Funding','Request NGN or USD deposit instructions',
-    'Commits a local intent and queues provider work. A 202 response does not contain payment instructions and proves no provider account was created. Poll the returned resource; only instructions_available may be shown as payable. instruction_uncertain requires operator reconciliation.',
-    Type.Ref(FiatDepositSchema),{command:true,status:202,body:object({currency:Type.String({enum:['NGN','USD']}),target_minor:Uint})})},
+    'Commits a local NGN intent and queues provider work. A 202 response does not contain payment instructions and proves no provider account was created. Poll the returned resource; only instructions_available may be shown as payable. instruction_uncertain requires operator reconciliation.',
+    Type.Ref(FiatDepositSchema),{command:true,status:202,body:object({currency:Type.Literal('NGN'),target_minor:Uint})})},
   run([],async({sql,actor,request})=>{
     requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
     const assurance=await accountAssurance(sql,actor);requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
       403,'FUNDING_ELIGIBILITY_REQUIRED','Verified identity and approved funding eligibility are required.');
-    const body=request.body as {currency:'NGN'|'USD';target_minor:string};
+    const body=request.body as {currency:'NGN';target_minor:string};
     return {status:202,body:await createFiatDeposit(sql,{owner:actor.id,currency:body.currency,targetMinor:body.target_minor},request.id)};
   }));
   app.get('/v1/fiat/deposit-intents/:id',{schema:contract('getFiatDepositIntent','Funding','Read a fiat deposit instruction workflow',
@@ -357,18 +359,73 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     Type.Ref(FiatDepositSchema),{params:IdParams})},async req=>{
       const {a}=await authenticated(req);return getFiatDeposit(db,a.id,id(req));
     });
-  app.post('/v1/fiat/payouts',{schema:contract('requestFiatPayout','Funding','Reserve NGN and submit one bank payout',
-    'Requires verified identity, funding eligibility, approved NGN rail and available NGN. The bank account is resolved before reservation but is never persisted. One provider submission is attempted. A timeout returns uncertain and keeps the full amount reserved for reconciliation; retry with the same idempotency key.',
+  app.post('/v1/fiat/payouts',{schema:contract('requestFiatPayout','Funding','Request an administrator-reviewed NGN payout',
+    'Requires verified identity, funding eligibility, approved NGN rail and available NGN. Swervpay resolves the bank account, the full amount is reserved, and encrypted payout details enter the finance queue. This request does not send money.',
     Type.Ref(WithdrawalSchema),{command:true,status:202,body:object({amount_minor:Uint,bank_code:Type.String({pattern:'^[0-9]{3,10}$'}),
       account_number:Type.String({pattern:'^[0-9]{10}$'}),narration:text('Statement narration. Do not include sensitive personal data.',80)})})},async(request,reply)=>{
       const {a}=await authenticated(request);requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
       const assurance=await accountAssurance(db,a);requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
         403,'FUNDING_ELIGIBILITY_REQUIRED','Verified identity and approved funding eligibility are required.');
       const body=request.body as {amount_minor:string;bank_code:string;account_number:string;narration:string};
-      const result=await requestFiatPayout(db,fiatDependencies.provider,fiatDependencies.dataHashKey,a.id,String(request.headers['idempotency-key']),{
-        amountMinor:body.amount_minor,bankCode:body.bank_code,accountNumber:body.account_number,narration:body.narration},request.id);
+      const result=await requestNgnWithdrawal(db,fiatDependencies.provider,fiatDependencies.dataHashKey,fiatDependencies.dataEncryptionKey,
+        fiatDependencies.keyVersion,a.id,String(request.headers['idempotency-key']),{amountMinor:body.amount_minor,bankCode:body.bank_code,
+          accountNumber:body.account_number,narration:body.narration},request.id);
       return reply.code(202).send(result);
     });
+  app.get('/v1/admin/fiat/payouts',{schema:contract('listNgnPayoutReviews','Finance','List NGN payouts for finance review',
+    'Finance-only queue. Decrypts bank details for the authorized administrator response; values remain excluded from logs and audit payloads.',
+    object({items:Type.Array(Type.Ref(AdminNgnPayoutSchema))}),{roles:['finance_operator'],querystring:object({state:Type.Optional(Type.String({
+      enum:['reserved','submitting','submitted','uncertain','finalized','cancelled','exception'],default:'reserved'}))})})},async request=>{
+      await authenticated(request,['finance_operator']);requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
+      return {items:await listNgnPayouts(db,fiatDependencies.dataEncryptionKey,(request.query as {state?:string}).state??'reserved')};
+    });
+  app.post('/v1/admin/fiat/payouts/:id/approve',{schema:contract('approveNgnPayout','Finance','Approve and submit one NGN payout',
+    'A finance administrator decision triggers one Swervpay payout attempt. Successful submission records the provider reference. Timeout or ambiguous response returns uncertain and keeps the full NGN amount reserved for reconciliation.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,status:202,roles:['finance_operator'],body:object({reason:Reason})})},async(request,reply)=>{
+      const {a}=await authenticated(request,['finance_operator']);requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
+      const result=await approveNgnPayout(db,fiatDependencies.provider,fiatDependencies.dataEncryptionKey,a.id,
+        String(request.headers['idempotency-key']),id(request),(request.body as {reason:string}).reason,request.id);
+      return reply.code(202).send(result);
+    });
+  app.post('/v1/admin/fiat/payouts/:id/complete',{schema:contract('completeNgnPayout','Finance','Confirm a Swervpay payout from the provider dashboard',
+    'After the finance administrator verifies success in Swervpay, records the unique provider reference, consumes the held reservation, and posts the balanced NGN withdrawal journal. This action never retries a payout.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({provider_reference:Type.String({minLength:1,maxLength:200,
+      pattern:'^[A-Za-z0-9._:-]+$'}),reason:Reason})})},run(['finance_operator'],async({sql,actor,request})=>{const body=request.body as {provider_reference:string;reason:string};
+      return {status:200,body:await completeNgnPayout(sql,id(request),actor.id,body.provider_reference,body.reason,request.id)};
+    }));
+  app.get('/v1/crypto-assets',{schema:contract('listCryptoAssets','Funding','List approved crypto withdrawal assets',
+    'Returns the exact network, token contract, decimals, and asset code. An empty list means no crypto asset is approved; a token symbol alone is never sufficient.',
+    object({items:Type.Array(Type.Ref(TokenAssetSchema))}))},async request=>{
+      await authenticated(request);const rows=(await db.query<TokenAssetRow>(`SELECT asset_code,symbol,chain_id::text,contract_address,decimals
+        FROM token_asset_registry WHERE approved=true ORDER BY asset_code`)).rows;return {items:rows.map(publicTokenAsset)};
+    });
+  app.post('/v1/crypto/withdrawals',{schema:contract('requestCryptoWithdrawal','Funding','Request a manual BEP-20 withdrawal',
+    'Validates the destination and approved token identity, then reserves the full token amount for finance review. No blockchain transaction is sent by this request.',
+    Type.Ref(WithdrawalSchema),{command:true,status:202,body:object({asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'}),amount_minor:Uint,
+      wallet_address:Type.String({pattern:'^0x[a-fA-F0-9]{40}$'})})})},run([],async({sql,actor,request})=>{
+      const assurance=await accountAssurance(sql,actor);requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
+        403,'FUNDING_ELIGIBILITY_REQUIRED','Verified identity and approved funding eligibility are required.');
+      const body=request.body as {asset:string;amount_minor:string;wallet_address:string};return {status:202,
+        body:await createCryptoWithdrawal(sql,{owner:actor.id,asset:body.asset,amount:body.amount_minor,destination:body.wallet_address},request.id)};
+    }));
+  app.get('/v1/crypto/withdrawals',{schema:contract('listCryptoWithdrawals','Funding','List your crypto withdrawal requests',
+    'Returns the caller\'s requests and manual-processing state. Submitted means a finance administrator recorded a transaction hash; it does not mean the transfer is finalized.',
+    object({items:Type.Array(Type.Ref(WithdrawalSchema))}))},async request=>{const {a}=await authenticated(request);return {items:await listCryptoWithdrawals(db,a.id)};});
+  app.get('/v1/admin/crypto/withdrawals',{schema:contract('listCryptoWithdrawalReviews','Finance','List crypto withdrawals for finance review',
+    'Finance-only queue containing exact token contract, chain, destination, amount, approval actor, and submission hash.',
+    object({items:Type.Array(Type.Ref(AdminCryptoWithdrawalSchema))}),{roles:['finance_operator'],querystring:object({state:Type.Optional(Type.String({
+      enum:['reserved','approved','submitted','uncertain','finalized','exception'],default:'reserved'}))})})},async request=>{
+      await authenticated(request,['finance_operator']);return {items:await listCryptoReviews(db,(request.query as {state?:string}).state??'reserved')};
+    });
+  app.post('/v1/admin/crypto/withdrawals/:id/approve',{schema:contract('approveCryptoWithdrawal','Finance','Approve a manual crypto withdrawal',
+    'Records the finance administrator decision. The administrator may then send the exact token, amount, network, and destination from the company wallet.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({reason:Reason})})},run(['finance_operator'],async({sql,actor,request})=>({status:200,
+      body:await approveCryptoWithdrawal(sql,id(request),actor.id,(request.body as {reason:string}).reason,request.id)})));
+  app.post('/v1/admin/crypto/withdrawals/:id/submission',{schema:contract('recordCryptoWithdrawalSubmission','Finance','Record the company-wallet transaction hash',
+    'Allowed only after approval. Records submission evidence but does not finalize or consume the reserved balance; later independent chain verification must confirm token contract, recipient, amount, and finality.',
+    Type.Ref(WithdrawalSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({transaction_hash:Type.String({pattern:'^0x[a-fA-F0-9]{64}$'})})})},
+  run(['finance_operator'],async({sql,actor,request})=>({status:200,body:await recordCryptoSubmission(sql,id(request),actor.id,
+    (request.body as {transaction_hash:string}).transaction_hash,request.id)})));
   app.post('/v1/deposit-intents',{schema:contract('createDepositIntent','Funding','Create a synthetic deposit intent',
     'Available only in the loopback synthetic demo. Returns no payment instructions or quote. Partner confirmation alone cannot credit available collateral. A future approved partner adapter and finalized chain observation are required.',
     Type.Ref(DepositSchema),{command:true,status:201,body:object({asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'}),
