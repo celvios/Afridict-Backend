@@ -11,7 +11,7 @@ import { hash } from '../src/platform/commands.js';
 import { migrate } from '../src/platform/migrations.js';
 import { postgres, type Database } from '../src/platform/database.js';
 
-let db:Database,app:FastifyInstance,marketId:string;
+let db:Database,app:FastifyInstance,marketId:string,postgresSchema:string|undefined;
 let key=0;
 let identities:Record<string,string>;
 const headers=(who:string)=>({authorization:`Bearer demo.${who}`});
@@ -27,7 +27,14 @@ beforeAll(async()=>{
   const testUrl=process.env.TEST_DATABASE_URL;
   if(testUrl){
     if(new URL(testUrl).pathname!=='/afridict_test')throw new Error('Refusing to run against a non-test database');
-    db=postgres(testUrl);
+    // CI runs multiple suites against this server. Isolate their seeded accounts,
+    // migrations and fixture balances while keeping real PostgreSQL lock behavior.
+    postgresSchema=`clob_test_${randomUUID().replaceAll('-','')}`;
+    const admin=postgres(testUrl);
+    try{await admin.query(`CREATE SCHEMA ${postgresSchema}`);}finally{await admin.close();}
+    const scoped=new URL(testUrl);
+    scoped.searchParams.set('options',`-csearch_path=${postgresSchema}`);
+    db=postgres(scoped.toString());
   }else db=await embeddedDatabase();
   await migrate(db);identities=await seedDemo(db);
   await db.query("UPDATE country_policies SET trading_enabled=true WHERE jurisdiction='ZZ' AND category='weather'");
@@ -56,7 +63,13 @@ beforeAll(async()=>{
   }
   app=await buildApp(db,demoConfig,demoAuth);
 });
-afterAll(async()=>{if(app)await app.close();if(db)await db.close();});
+afterAll(async()=>{
+  if(app)await app.close();if(db)await db.close();
+  if(postgresSchema){
+    const admin=postgres(process.env.TEST_DATABASE_URL!);
+    try{await admin.query(`DROP SCHEMA ${postgresSchema} CASCADE`);}finally{await admin.close();}
+  }
+});
 
 describe('collateralized synthetic order book',()=>{
   it('requires governed activation and exposes a sequenced empty snapshot',async()=>{
