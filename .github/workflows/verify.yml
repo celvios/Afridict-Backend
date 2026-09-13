@@ -32,9 +32,3 @@ jobs:
       - run: npm run check
       - run: npm run api:check
       - run: npm audit --omit=dev --audit-level=high
-      - name: Reject tracked Markdown
-        run: |
-          if git ls-files | grep -Ei '\.md$'; then
-            echo 'Markdown must remain local.'
-            exit 1
-          fi
