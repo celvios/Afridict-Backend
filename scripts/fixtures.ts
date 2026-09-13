@@ -12,6 +12,9 @@ export const personas: Record<string, string[]> = {
   trader: ['user'], creator: ['user','market_creator'], other_creator: ['user','market_creator'],
   approver: ['user','market_approver'], legal: ['user','legal_reviewer'], integrity: ['user','integrity_reviewer'],
   resolution: ['user','resolution_reviewer'], compliance: ['user','compliance_officer'],
+  resolution_proposer: ['user','resolution_proposer'], resolution_challenger: ['user','resolution_proposer'],
+  resolution_judge_two: ['user','resolution_reviewer'], resolution_judge_three: ['user','resolution_reviewer'],
+  resolution_finalizer: ['user','resolution_finalizer'],
   other_compliance: ['user','compliance_officer'], proposer: ['user','market_proposer'], auditor: ['user','auditor'],
   finance: ['user','finance_operator'],
 };
