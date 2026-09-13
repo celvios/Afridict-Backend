@@ -2,7 +2,7 @@
   "openapi": "3.1.1",
   "info": {
     "title": "Afridict Backend API",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Identity, governance and financial workflow API. Financial commands execute only in the isolated synthetic demo; no real payment partner, chain indexer, custody activation, trading or resolution is available. Production access requires approved adapters and governance."
   },
   "components": {
@@ -152,6 +152,218 @@
             "format": "date-time",
             "description": "RFC 3339 instant. Responses use UTC.",
             "type": "string"
+          }
+        }
+      },
+      "Capabilities": {
+        "additionalProperties": false,
+        "description": "Server-owned action decisions. The UI may explain requirements but must not use them to bypass backend enforcement.",
+        "type": "object",
+        "required": [
+          "BROWSE",
+          "TRADE",
+          "DEPOSIT_NGN",
+          "DEPOSIT_CRYPTO",
+          "WITHDRAW_NGN",
+          "WITHDRAW_CRYPTO",
+          "USE_TRADING_API"
+        ],
+        "properties": {
+          "BROWSE": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "allowed",
+              "requirements"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "EMAIL_VERIFICATION",
+                    "PHONE_VERIFICATION",
+                    "IDENTITY_VERIFICATION",
+                    "FUNDING_ELIGIBILITY",
+                    "JURISDICTION_POLICY",
+                    "RISK_REVIEW",
+                    "CAPABILITY_NOT_ACTIVE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "TRADE": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "allowed",
+              "requirements"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "EMAIL_VERIFICATION",
+                    "PHONE_VERIFICATION",
+                    "IDENTITY_VERIFICATION",
+                    "FUNDING_ELIGIBILITY",
+                    "JURISDICTION_POLICY",
+                    "RISK_REVIEW",
+                    "CAPABILITY_NOT_ACTIVE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "DEPOSIT_NGN": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "allowed",
+              "requirements"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "EMAIL_VERIFICATION",
+                    "PHONE_VERIFICATION",
+                    "IDENTITY_VERIFICATION",
+                    "FUNDING_ELIGIBILITY",
+                    "JURISDICTION_POLICY",
+                    "RISK_REVIEW",
+                    "CAPABILITY_NOT_ACTIVE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "DEPOSIT_CRYPTO": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "allowed",
+              "requirements"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "EMAIL_VERIFICATION",
+                    "PHONE_VERIFICATION",
+                    "IDENTITY_VERIFICATION",
+                    "FUNDING_ELIGIBILITY",
+                    "JURISDICTION_POLICY",
+                    "RISK_REVIEW",
+                    "CAPABILITY_NOT_ACTIVE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "WITHDRAW_NGN": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "allowed",
+              "requirements"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "EMAIL_VERIFICATION",
+                    "PHONE_VERIFICATION",
+                    "IDENTITY_VERIFICATION",
+                    "FUNDING_ELIGIBILITY",
+                    "JURISDICTION_POLICY",
+                    "RISK_REVIEW",
+                    "CAPABILITY_NOT_ACTIVE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "WITHDRAW_CRYPTO": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "allowed",
+              "requirements"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "EMAIL_VERIFICATION",
+                    "PHONE_VERIFICATION",
+                    "IDENTITY_VERIFICATION",
+                    "FUNDING_ELIGIBILITY",
+                    "JURISDICTION_POLICY",
+                    "RISK_REVIEW",
+                    "CAPABILITY_NOT_ACTIVE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "USE_TRADING_API": {
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "allowed",
+              "requirements"
+            ],
+            "properties": {
+              "allowed": {
+                "type": "boolean"
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "enum": [
+                    "EMAIL_VERIFICATION",
+                    "PHONE_VERIFICATION",
+                    "IDENTITY_VERIFICATION",
+                    "FUNDING_ELIGIBILITY",
+                    "JURISDICTION_POLICY",
+                    "RISK_REVIEW",
+                    "CAPABILITY_NOT_ACTIVE"
+                  ],
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       },
@@ -2133,6 +2345,253 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Account"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_FAILED or INVALID_CURSOR. Correct the request before retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED or INVALID_PARTNER_SIGNATURE. Obtain valid caller or partner authentication.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN, ACCOUNT_RESTRICTED, ONBOARDING_REQUIRED, SEPARATION_OF_DUTIES or COUNTRY_POLICY_BLOCKED. Do not retry without resolving authorization or policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND. Resource does not exist or is not visible to this caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency, workflow version, collateral, reservation, withdrawal or governance conflict. Refresh state; changed commands need a new idempotency key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "VALIDATION_FAILED. Request body exceeds the configured size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE. Use application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid amount, asset, journal, market policy, template, source or policy reference. Correct semantic input before retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED. Observe Retry-After and retry with the original command key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Minimum delay in seconds before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL_ERROR. Contact support with X-Request-Id; do not assume a command failed to commit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency, identity, financial integration or partner adapter unavailable. Retry only transient failures with the same command key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Minimum delay in seconds before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me/capabilities": {
+      "get": {
+        "operationId": "getCurrentCapabilities",
+        "summary": "Get current action capabilities",
+        "tags": [
+          "Identity"
+        ],
+        "description": "Returns normalized server-owned decisions and unmet requirements. Production money and trading commands must call this policy before activation; current financial commands remain isolated synthetic operations. Actions fail closed until provider, jurisdiction, risk and production gates are approved.",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful result; see the operation description for what is committed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Capabilities"
                 }
               }
             },

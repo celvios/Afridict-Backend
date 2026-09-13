@@ -13,7 +13,7 @@ import { command, hash, record } from './platform/commands.js';
 import { findAccount, hasRole, oidcAuthenticator, publicAccount, type Account, type Authenticator, type Principal } from './identity/auth.js';
 import { schemas, AccountSchema, EligibilitySchema, ErrorSchema, IdParams, IdempotencyHeaders,
   Terms, MarketSchema, ProposalSchema, ReviewSchema, ReviewCommand, VersionCommand, ListQuery,
-  Reason, EvidenceRef, EligibilityReviewSchema, Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
+  Reason, EvidenceRef, EligibilityReviewSchema, CapabilitiesSchema, Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
 import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket, mayReadDraft, publicMarket, publish, reviewMarket,
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
@@ -24,6 +24,7 @@ import { applyPartnerDeposit, createDepositIntent, createWithdrawal, cancelWithd
   type PartnerVerifier } from './funding/service.js';
 import { walletBalances } from './financial/ledger.js';
 import { reconcile } from './financial/reconciliation.js';
+import { accountAssurance, evaluateCapabilities } from './identity/capabilities.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -55,7 +56,7 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute', global: true,
     errorResponseBuilder: req => ({ code: 'RATE_LIMITED', message: 'Request limit exceeded. Retry after the indicated delay.', request_id: req.id }) });
   await app.register(swagger, { openapi: { openapi: '3.1.1',
-    info: { title: 'Afridict Backend API', version: '0.3.0', description: 'Identity, governance and financial workflow API. Financial commands execute only in the isolated synthetic demo; no real payment partner, chain indexer, custody activation, trading or resolution is available. Production access requires approved adapters and governance.' },
+    info: { title: 'Afridict Backend API', version: '0.4.0', description: 'Identity, governance and financial workflow API. Financial commands execute only in the isolated synthetic demo; no real payment partner, chain indexer, custody activation, trading or resolution is available. Production access requires approved adapters and governance.' },
     servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development only; not a production address' }],
     tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic'].map(name => ({ name, description: `${name} operations` })),
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
@@ -133,6 +134,10 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     return reply.code(result.status).send(result.body);
   });
   app.get('/v1/me', { schema: contract('getCurrentAccount','Identity','Get the current account','Returns the caller account and server-assigned roles; provider subject and raw identity evidence are excluded.', Type.Ref(AccountSchema)) }, async req => publicAccount((await authenticated(req)).a));
+  app.get('/v1/me/capabilities', { schema: contract('getCurrentCapabilities','Identity','Get current action capabilities',
+    'Returns normalized server-owned decisions and unmet requirements. Production money and trading commands must call this policy before activation; current financial commands remain isolated synthetic operations. Actions fail closed until provider, jurisdiction, risk and production gates are approved.', Type.Ref(CapabilitiesSchema)) }, async req => {
+    const {a}=await authenticated(req); return evaluateCapabilities(await accountAssurance(db,a));
+  });
   app.get('/v1/session', { schema: contract('getSession','Identity','Inspect the authenticated session','Returns token expiry and session/recovery ownership. Sign-in, MFA, refresh, logout and recovery are owned by the configured OIDC provider; this API does not store refresh tokens. Account restrictions are checked on each request.', object({ account_id: UUID, expires_at: Timestamp, authentication: Type.String({ enum: ['oidc','synthetic_demo'] }), recovery: Type.Literal('identity_provider') })) }, async req => {
     const { a, p } = await authenticated(req); return { account_id: a.id, expires_at: p.expiresAt,
       authentication: cfg.authMode === 'demo' ? 'synthetic_demo' : 'oidc', recovery: 'identity_provider' };

@@ -51,6 +51,8 @@ export async function seedDemo(db: Database) {
       await sql.query('INSERT INTO accounts(id,issuer,subject,jurisdiction,roles) VALUES ($1,$2,$3,$4,$5)',
         [id, 'urn:afridict:synthetic-demo', name, 'ZZ', roles]);
       await sql.query("INSERT INTO eligibility(account_id,status,policy_version) VALUES ($1,'pending','demo:unreviewed')", [id]);
+      await sql.query(`INSERT INTO account_assurance(account_id,email_verified_at,phone_verified_at,identity_status,identity_evidence_ref)
+        VALUES ($1,now(),now(),'VERIFIED','synthetic-demo-only')`,[id]);
       await sql.query(`INSERT INTO smart_accounts(owner_id,chain_id,address,status,recovery_policy_ref)
         VALUES ($1,46630,$2,'active','synthetic-demo-only')`,[id,`0x${id.replace(/-/g,'').padStart(40,'0')}`]);
     }

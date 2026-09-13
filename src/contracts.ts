@@ -22,6 +22,13 @@ export const EligibilitySchema = object({ account_id: UUID,
   status: Type.String({ enum: ['pending', 'eligible', 'restricted'] }), policy_version: text('Version of the applied eligibility policy.', 100),
   trading_enabled: Type.Boolean({ description: 'False in this release: execution and real-money activation are not implemented.' }),
   reason_codes: Type.Array(Type.String()), updated_at: Timestamp }, { $id: 'Eligibility' });
+const CapabilityDecisionSchema = object({ allowed: Type.Boolean(), requirements: Type.Array(Type.String({ enum:
+  ['EMAIL_VERIFICATION','PHONE_VERIFICATION','IDENTITY_VERIFICATION','FUNDING_ELIGIBILITY','JURISDICTION_POLICY','RISK_REVIEW','CAPABILITY_NOT_ACTIVE'] })) });
+export const CapabilitiesSchema = object({
+  BROWSE: CapabilityDecisionSchema, TRADE: CapabilityDecisionSchema, DEPOSIT_NGN: CapabilityDecisionSchema,
+  DEPOSIT_CRYPTO: CapabilityDecisionSchema, WITHDRAW_NGN: CapabilityDecisionSchema,
+  WITHDRAW_CRYPTO: CapabilityDecisionSchema, USE_TRADING_API: CapabilityDecisionSchema,
+}, { $id: 'Capabilities', description: 'Server-owned action decisions. The UI may explain requirements but must not use them to bypass backend enforcement.' });
 export const EvidenceSource = object({ name: text('Published source name.', 150),
   uri: Type.String({ format: 'uri', pattern: '^https://', maxLength: 2048, description: 'Evidence-source reference. This API never fetches supplied URLs.' }) });
 const scalar = object({ lower: signed, upper: signed, decimals: Type.Integer({ minimum: 0, maximum: 18 }),
@@ -89,5 +96,5 @@ export const ListQuery = object({ limit: Type.Optional(Type.Integer({ minimum: 1
 export const IdParams = object({ id: UUID });
 export const IdempotencyHeaders = Type.Object({ 'idempotency-key': Type.String({ minLength: 8, maxLength: 128,
   pattern: '^[A-Za-z0-9_-]+$', description: 'Unique per actor across all commands. Committed responses are retained indefinitely in this release. Same method, route, resource and canonical JSON body returns the original result; different content returns 409. Concurrent retries wait for the transaction or return 503; retry with the same key. Failed transactions may be retried. Authentication and authorization are rechecked on every retry.' }) }, { additionalProperties: true });
-export const schemas = [ErrorSchema, AccountSchema, EligibilitySchema, Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
+export const schemas = [ErrorSchema, AccountSchema, EligibilitySchema, CapabilitiesSchema, Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
 export { object, text };

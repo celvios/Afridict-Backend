@@ -84,6 +84,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get current action capabilities
+         * @description Returns normalized server-owned decisions and unmet requirements. Production money and trading commands must call this policy before activation; current financial commands remain isolated synthetic operations. Actions fail closed until provider, jurisdiction, risk and production gates are approved.
+         */
+        get: operations["getCurrentCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/session": {
         parameters: {
             query?: never;
@@ -851,6 +871,37 @@ export interface components {
              * @description RFC 3339 instant. Responses use UTC.
              */
             updated_at: string;
+        };
+        /** @description Server-owned action decisions. The UI may explain requirements but must not use them to bypass backend enforcement. */
+        Capabilities: {
+            BROWSE: {
+                allowed: boolean;
+                requirements: ("EMAIL_VERIFICATION" | "PHONE_VERIFICATION" | "IDENTITY_VERIFICATION" | "FUNDING_ELIGIBILITY" | "JURISDICTION_POLICY" | "RISK_REVIEW" | "CAPABILITY_NOT_ACTIVE")[];
+            };
+            TRADE: {
+                allowed: boolean;
+                requirements: ("EMAIL_VERIFICATION" | "PHONE_VERIFICATION" | "IDENTITY_VERIFICATION" | "FUNDING_ELIGIBILITY" | "JURISDICTION_POLICY" | "RISK_REVIEW" | "CAPABILITY_NOT_ACTIVE")[];
+            };
+            DEPOSIT_NGN: {
+                allowed: boolean;
+                requirements: ("EMAIL_VERIFICATION" | "PHONE_VERIFICATION" | "IDENTITY_VERIFICATION" | "FUNDING_ELIGIBILITY" | "JURISDICTION_POLICY" | "RISK_REVIEW" | "CAPABILITY_NOT_ACTIVE")[];
+            };
+            DEPOSIT_CRYPTO: {
+                allowed: boolean;
+                requirements: ("EMAIL_VERIFICATION" | "PHONE_VERIFICATION" | "IDENTITY_VERIFICATION" | "FUNDING_ELIGIBILITY" | "JURISDICTION_POLICY" | "RISK_REVIEW" | "CAPABILITY_NOT_ACTIVE")[];
+            };
+            WITHDRAW_NGN: {
+                allowed: boolean;
+                requirements: ("EMAIL_VERIFICATION" | "PHONE_VERIFICATION" | "IDENTITY_VERIFICATION" | "FUNDING_ELIGIBILITY" | "JURISDICTION_POLICY" | "RISK_REVIEW" | "CAPABILITY_NOT_ACTIVE")[];
+            };
+            WITHDRAW_CRYPTO: {
+                allowed: boolean;
+                requirements: ("EMAIL_VERIFICATION" | "PHONE_VERIFICATION" | "IDENTITY_VERIFICATION" | "FUNDING_ELIGIBILITY" | "JURISDICTION_POLICY" | "RISK_REVIEW" | "CAPABILITY_NOT_ACTIVE")[];
+            };
+            USE_TRADING_API: {
+                allowed: boolean;
+                requirements: ("EMAIL_VERIFICATION" | "PHONE_VERIFICATION" | "IDENTITY_VERIFICATION" | "FUNDING_ELIGIBILITY" | "JURISDICTION_POLICY" | "RISK_REVIEW" | "CAPABILITY_NOT_ACTIVE")[];
+            };
         };
         /**
          * @description Versioned public market policy. Binary requires yes/no outcomes; scalar requires short/long and scalar_range; categorical requires unique outcomes. Publication fixes the complete policy hash. No endpoint in this release activates trading.
@@ -1875,6 +1926,153 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Account"];
+                };
+            };
+            /** @description VALIDATION_FAILED or INVALID_CURSOR. Correct the request before retrying. */
+            400: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description UNAUTHENTICATED or INVALID_PARTNER_SIGNATURE. Obtain valid caller or partner authentication. */
+            401: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description FORBIDDEN, ACCOUNT_RESTRICTED, ONBOARDING_REQUIRED, SEPARATION_OF_DUTIES or COUNTRY_POLICY_BLOCKED. Do not retry without resolving authorization or policy. */
+            403: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description NOT_FOUND. Resource does not exist or is not visible to this caller. */
+            404: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Idempotency, workflow version, collateral, reservation, withdrawal or governance conflict. Refresh state; changed commands need a new idempotency key. */
+            409: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description VALIDATION_FAILED. Request body exceeds the configured size limit. */
+            413: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description UNSUPPORTED_MEDIA_TYPE. Use application/json. */
+            415: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Invalid amount, asset, journal, market policy, template, source or policy reference. Correct semantic input before retrying. */
+            422: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description RATE_LIMITED. Observe Retry-After and retry with the original command key. */
+            429: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    /** @description Minimum delay in seconds before retrying. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description INTERNAL_ERROR. Contact support with X-Request-Id; do not assume a command failed to commit. */
+            500: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Dependency, identity, financial integration or partner adapter unavailable. Retry only transient failures with the same command key. */
+            503: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    /** @description Minimum delay in seconds before retrying. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    getCurrentCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful result; see the operation description for what is committed. */
+            200: {
+                headers: {
+                    /** @description Server-issued correlation identifier. */
+                    "X-Request-Id"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Capabilities"];
                 };
             };
             /** @description VALIDATION_FAILED or INVALID_CURSOR. Correct the request before retrying. */

@@ -52,6 +52,10 @@ describe('identity and governance boundaries', () => {
     expect(eligibility.json()).toMatchObject({ status: 'pending', trading_enabled: false });
     expect(eligibility.headers['x-request-id']).toMatch(/^req_/);
     expect((await read('invalid','/v1/me')).statusCode).toBe(401);
+    const capabilities=(await read('trader','/v1/me/capabilities')).json<Record<string,{allowed:boolean;requirements:string[]}>>();
+    expect(capabilities.BROWSE!.allowed).toBe(true);
+    expect(capabilities.WITHDRAW_NGN).toMatchObject({allowed:false});
+    expect(capabilities.WITHDRAW_NGN!.requirements).toContain('CAPABILITY_NOT_ACTIVE');
   });
   it('onboards from verified identity without accepting supplied roles or jurisdiction changes', async () => {
     const first = await write('new_user','POST','/v1/onboarding',{ jurisdiction: 'ZZ' },'new-user-onboard');
