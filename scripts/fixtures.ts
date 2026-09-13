@@ -58,6 +58,8 @@ export async function seedDemo(db: Database) {
     }
     await sql.query(`INSERT INTO financial_assets(code,scale,synthetic,approved,evidence_ref)
       VALUES ('DEMO',6,true,true,'synthetic-demo-only')`);
+    await sql.query(`UPDATE financial_assets SET synthetic=true,approved=true,evidence_ref='synthetic-demo-only'
+      WHERE code IN ('NGN','USD')`);
     for (const type of ['binary','categorical','scalar']) await sql.query(`INSERT INTO market_templates(id,version,market_type,approved,evidence_ref)
       VALUES ($1,1,$2,true,'synthetic-demo-only')`, [`demo-${type}`, type]);
     await sql.query(`INSERT INTO country_policies(jurisdiction,category,policy_version,publication_allowed,evidence_ref)

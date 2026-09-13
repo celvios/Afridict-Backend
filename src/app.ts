@@ -21,7 +21,7 @@ import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
 import { financialSchemas, FinancialAssetSchema, BalanceSchema, DepositSchema, WithdrawalSchema,
-  ReconciliationSchema, StatementSchema, SmartAccountSchema } from './funding/contracts.js';
+  ReconciliationSchema, StatementSchema, SmartAccountSchema,FiatWalletSchema } from './funding/contracts.js';
 import { applyPartnerDeposit, createDepositIntent, createWithdrawal, cancelWithdrawal, finalizeDeposit,
   finalizeWithdrawal, markWithdrawalUncertain, publicDeposit, publicWithdrawal, submitWithdrawal,
   type PartnerVerifier } from './funding/service.js';
@@ -306,6 +306,22 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     'Off-chain ledger projection. Pending partner deposits do not create spendable collateral. spendable is false because trading is not active.',
     object({items:Type.Array(Type.Ref(BalanceSchema))}))},async req=>{
     const {a}=await authenticated(req); return {items:(await walletBalances(db,a.id)).map(balance=>({...balance,spendable:false}))};
+  });
+  app.get('/v1/wallets',{schema:contract('listFiatWallets','Portfolio','Read separate NGN and USD wallet projections',
+    'Returns both currency ledgers in integer minor units, including zero balances. Rail flags remain false until the corresponding provider and governance record are approved. NGN and USD are never netted or converted implicitly.',
+    object({items:Type.Array(Type.Ref(FiatWalletSchema),{minItems:2,maxItems:2})}))},async req=>{
+    const {a}=await authenticated(req);
+    const rows=(await db.query<{currency:'NGN'|'USD';scale:2;available_minor:string;reserved_minor:string;withdrawal_pending_minor:string;
+      funding_enabled:boolean;withdrawal_enabled:boolean}>(`SELECT f.code AS currency,f.scale,
+      COALESCE(sum(CASE WHEN la.bucket='user_available' THEN le.credit-le.debit ELSE 0 END),0)::text AS available_minor,
+      COALESCE(sum(CASE WHEN la.bucket='user_reserved' THEN le.credit-le.debit ELSE 0 END),0)::text AS reserved_minor,
+      COALESCE(sum(CASE WHEN la.bucket='user_withdrawal_pending' THEN le.credit-le.debit ELSE 0 END),0)::text AS withdrawal_pending_minor,
+      COALESCE(r.approved AND r.collections_enabled,false) AS funding_enabled,
+      COALESCE(r.approved AND r.payouts_enabled,false) AS withdrawal_enabled
+      FROM financial_assets f LEFT JOIN ledger_accounts la ON la.asset_code=f.code AND la.owner_id=$1
+      LEFT JOIN ledger_entries le ON le.account_id=la.id LEFT JOIN fiat_rail_registry r ON r.asset_code=f.code AND r.provider='swervpay'
+      WHERE f.code IN ('NGN','USD') AND f.approved=true GROUP BY f.code,f.scale,r.approved,r.collections_enabled,r.payouts_enabled ORDER BY f.code`,[a.id])).rows;
+    return {items:rows};
   });
   app.post('/v1/deposit-intents',{schema:contract('createDepositIntent','Funding','Create a synthetic deposit intent',
     'Available only in the loopback synthetic demo. Returns no payment instructions or quote. Partner confirmation alone cannot credit available collateral. A future approved partner adapter and finalized chain observation are required.',
