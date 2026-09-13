@@ -1,4 +1,5 @@
 import { buildApp } from './app.js';
+import { TwilioVerifyProvider } from './identity/providers.js';
 import { config } from './platform/config.js';
 import { postgres } from './platform/database.js';
 
@@ -6,7 +7,14 @@ const cfg = config();
 if (cfg.authMode === 'demo') throw new Error('Use npm run demo for the isolated synthetic environment');
 if (!cfg.databaseUrl) throw new Error('DATABASE_URL is required');
 const db = postgres(cfg.databaseUrl);
-const app = await buildApp(db, cfg);
+const contactValues=[process.env.TWILIO_VERIFY_SERVICE_SID,process.env.TWILIO_API_KEY_SID,
+  process.env.TWILIO_API_KEY_SECRET,process.env.ABUSE_HASH_KEY];
+if(contactValues.some(Boolean)&&!contactValues.every(Boolean)) throw new Error('Contact verification configuration is incomplete');
+if(process.env.ABUSE_HASH_KEY&&process.env.ABUSE_HASH_KEY.length<32) throw new Error('ABUSE_HASH_KEY must contain at least 32 characters');
+const contactDependencies=contactValues.every(Boolean)?{provider:new TwilioVerifyProvider({
+  serviceSid:process.env.TWILIO_VERIFY_SERVICE_SID!,apiKeySid:process.env.TWILIO_API_KEY_SID!,
+  apiKeySecret:process.env.TWILIO_API_KEY_SECRET!}),abuseHashKey:process.env.ABUSE_HASH_KEY!}:undefined;
+const app = await buildApp(db, cfg,undefined,undefined,contactDependencies);
 try {
   await db.query('SELECT id FROM accounts LIMIT 1');
   if (cfg.environment === 'production') {

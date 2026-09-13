@@ -9,13 +9,13 @@ GRANT INSERT ON accounts, eligibility, eligibility_reviews, market_templates,
   market_reviews, command_results, audit_events, outbox, outbox_deliveries, inbox,
   ledger_accounts, ledger_journals, ledger_entries, collateral_reservations,
   financial_exceptions, deposit_intents, partner_events, chain_observations, account_assurance, account_profiles,
-  withdrawals, reconciliation_runs
+  contact_verifications, contact_verification_events, withdrawals, reconciliation_runs
   TO afridict_runtime;
 REVOKE INSERT ON market_templates, country_policies, evidence_sources, policy_registry,
   financial_assets, smart_accounts
   FROM afridict_runtime;
 GRANT UPDATE ON eligibility, eligibility_reviews, market_proposals, markets,
   command_results, outbox_deliveries, collateral_reservations, financial_exceptions,
-  deposit_intents, withdrawals, account_assurance TO afridict_runtime;
+  deposit_intents, withdrawals, account_assurance, contact_verifications TO afridict_runtime;
 -- No UPDATE/DELETE/TRUNCATE on audit_events, outbox, market_reviews or
 -- the approved registries; no UPDATE on accounts or published market policy.
