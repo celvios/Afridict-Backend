@@ -45,6 +45,14 @@ beforeAll(async () => {
 afterAll(async () => { if (app) await app.close(); if (db) await db.close(); });
 
 describe('identity and governance boundaries', () => {
+  it('publishes only non-secret normalized authentication configuration',async()=>{
+    const response=await app.inject({method:'GET',url:'/v1/auth/configuration'});
+    expect(response.statusCode,response.body).toBe(200);
+    expect(response.json()).toMatchObject({methods:[{id:'password',enabled:false},{id:'google',enabled:false}],
+      oidc:{authorization_url:null,client_id:null,pkce:'S256'},registration_available:false,
+      account_linking:'verified_provider_subject'});
+    expect(response.body).not.toMatch(/secret|credential/i);
+  });
   it('starts with denied eligibility and never advertises trading', async () => {
     const me = await read('trader','/v1/me'); expect(me.statusCode).toBe(200);
     expect(me.json()).not.toHaveProperty('subject');

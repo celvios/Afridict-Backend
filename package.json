@@ -31,6 +31,7 @@
     "dotenv": "17.4.2",
     "fastify": "5.12.4",
     "jose": "6.2.12",
+    "libphonenumber-js": "1.12.24",
     "pg": "8.23.0"
   },
   "devDependencies": {

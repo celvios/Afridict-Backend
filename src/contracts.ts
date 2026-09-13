@@ -29,6 +29,12 @@ export const CapabilitiesSchema = object({
   DEPOSIT_CRYPTO: CapabilityDecisionSchema, WITHDRAW_NGN: CapabilityDecisionSchema,
   WITHDRAW_CRYPTO: CapabilityDecisionSchema, USE_TRADING_API: CapabilityDecisionSchema,
 }, { $id: 'Capabilities', description: 'Server-owned action decisions. The UI may explain requirements but must not use them to bypass backend enforcement.' });
+export const AuthenticationConfigurationSchema=object({
+  methods:Type.Array(object({id:Type.String({enum:['password','google']}),enabled:Type.Boolean()})),
+  oidc:object({authorization_url:Type.Union([Type.String({format:'uri',pattern:'^https://'}),Type.Null()]),
+    client_id:Type.Union([Type.String(),Type.Null()]),scopes:Type.Array(Type.String()),pkce:Type.Literal('S256')}),
+  registration_available:Type.Boolean(),account_linking:Type.Literal('verified_provider_subject'),
+},{$id:'AuthenticationConfiguration',description:'Public, non-secret authentication discovery. Google and password authentication are owned by one configured OIDC provider so Afridict does not create competing identities.'});
 export const EvidenceSource = object({ name: text('Published source name.', 150),
   uri: Type.String({ format: 'uri', pattern: '^https://', maxLength: 2048, description: 'Evidence-source reference. This API never fetches supplied URLs.' }) });
 const scalar = object({ lower: signed, upper: signed, decimals: Type.Integer({ minimum: 0, maximum: 18 }),
@@ -96,5 +102,6 @@ export const ListQuery = object({ limit: Type.Optional(Type.Integer({ minimum: 1
 export const IdParams = object({ id: UUID });
 export const IdempotencyHeaders = Type.Object({ 'idempotency-key': Type.String({ minLength: 8, maxLength: 128,
   pattern: '^[A-Za-z0-9_-]+$', description: 'Unique per actor across all commands. Committed responses are retained indefinitely in this release. Same method, route, resource and canonical JSON body returns the original result; different content returns 409. Concurrent retries wait for the transaction or return 503; retry with the same key. Failed transactions may be retried. Authentication and authorization are rechecked on every retry.' }) }, { additionalProperties: true });
-export const schemas = [ErrorSchema, AccountSchema, EligibilitySchema, CapabilitiesSchema, Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
+export const schemas = [ErrorSchema, AccountSchema, EligibilitySchema, CapabilitiesSchema, AuthenticationConfigurationSchema,
+  Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
 export { object, text };

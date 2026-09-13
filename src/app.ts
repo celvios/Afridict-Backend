@@ -13,7 +13,8 @@ import { command, hash, record } from './platform/commands.js';
 import { findAccount, hasRole, oidcAuthenticator, publicAccount, type Account, type Authenticator, type Principal } from './identity/auth.js';
 import { schemas, AccountSchema, EligibilitySchema, ErrorSchema, IdParams, IdempotencyHeaders,
   Terms, MarketSchema, ProposalSchema, ReviewSchema, ReviewCommand, VersionCommand, ListQuery,
-  Reason, EvidenceRef, EligibilityReviewSchema, CapabilitiesSchema, Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
+  Reason, EvidenceRef, EligibilityReviewSchema, CapabilitiesSchema, AuthenticationConfigurationSchema,
+  Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
 import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket, mayReadDraft, publicMarket, publish, reviewMarket,
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
@@ -113,6 +114,12 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     await db.query('SELECT id FROM accounts LIMIT 1'); return { status: 'ready' };
   });
   app.get('/openapi.json', { schema: { hide: true } }, async () => app.swagger());
+  app.get('/v1/auth/configuration',{schema:contract('getAuthenticationConfiguration','Identity','Discover available sign-in methods',
+    'Returns public OIDC client configuration only. Password credentials, Google authorization codes, client secrets and account linking remain with the selected identity provider. Methods remain disabled until that provider is configured.',Type.Ref(AuthenticationConfigurationSchema),{public:true})},async()=>({
+    methods:(['password','google'] as const).map(id=>({id,enabled:cfg.authMethods.includes(id)})),
+    oidc:{authorization_url:cfg.authorizationUrl??null,client_id:cfg.oidcClientId??null,scopes:['openid','email','profile'],pkce:'S256' as const},
+    registration_available:cfg.authMethods.includes('password'),account_linking:'verified_provider_subject' as const,
+  }));
 
   app.post('/v1/onboarding', { schema: contract('onboardAccount','Identity','Create an account from verified identity',
     'Creates only the user role and pending eligibility. The provider subject comes from the verified token, never the body. No wallet or KYC approval is implied. Repeat onboarding with the same jurisdiction returns the account; changing jurisdiction requires a future governed workflow.', Type.Ref(AccountSchema),

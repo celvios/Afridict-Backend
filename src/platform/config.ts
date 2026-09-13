@@ -5,6 +5,7 @@ export interface Config {
   databaseUrl?: string; authMode: 'oidc' | 'demo'; issuer?: string; audience?: string;
   jwksUrl?: string; corsOrigins: string[]; docs: boolean; logger: boolean;
   financialMode: 'disabled' | 'synthetic';
+  authMethods: ('password'|'google')[]; authorizationUrl?: string; oidcClientId?: string;
 }
 export function config(env = process.env): Config {
   const environment = env.NODE_ENV ?? 'development';
@@ -23,6 +24,14 @@ export function config(env = process.env): Config {
     for (const value of [env.OIDC_ISSUER, env.OIDC_JWKS_URL])
       if (new URL(value).protocol !== 'https:') throw new Error('OIDC endpoints must use HTTPS');
   }
+  const authMethods=(env.AUTH_METHODS??'').split(',').filter(Boolean);
+  if (new Set(authMethods).size!==authMethods.length || authMethods.some(method=>!['password','google'].includes(method)))
+    throw new Error('AUTH_METHODS must contain unique password or google values');
+  if (authMethods.length) {
+    if (authMode!=='oidc' || !env.OIDC_AUTHORIZATION_URL || !env.OIDC_CLIENT_ID)
+      throw new Error('Advertised authentication methods require OIDC authorization configuration');
+    if (new URL(env.OIDC_AUTHORIZATION_URL).protocol!=='https:') throw new Error('OIDC authorization endpoint must use HTTPS');
+  }
   const port = Number(env.PORT ?? '3000');
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
   const corsOrigins = (env.CORS_ORIGINS ?? '').split(',').filter(Boolean);
@@ -35,5 +44,6 @@ export function config(env = process.env): Config {
   return { environment: environment as Config['environment'], host, port, authMode: authMode as Config['authMode'],
     databaseUrl: env.DATABASE_URL, issuer: env.OIDC_ISSUER, audience: env.OIDC_AUDIENCE, jwksUrl: env.OIDC_JWKS_URL,
     corsOrigins, docs: env.DOCS_ENABLED === 'true' || (environment !== 'production' && env.DOCS_ENABLED !== 'false'),
-    logger: environment !== 'test', financialMode: financialMode as Config['financialMode'] };
+    logger: environment !== 'test', financialMode: financialMode as Config['financialMode'],
+    authMethods:authMethods as Config['authMethods'],authorizationUrl:env.OIDC_AUTHORIZATION_URL,oidcClientId:env.OIDC_CLIENT_ID };
 }

@@ -16,4 +16,13 @@ describe('deployment safety', () => {
     expect(() => config({ NODE_ENV: 'production', AUTH_MODE: 'oidc', OIDC_ISSUER: 'https://issuer.example',
       OIDC_AUDIENCE: 'api', OIDC_JWKS_URL: 'https://issuer.example/jwks', CORS_ORIGINS: 'http://localhost:5173' })).toThrow();
   });
+  it('advertises Google only through configured OIDC authorization',()=>{
+    const base={NODE_ENV:'development',AUTH_MODE:'oidc',OIDC_ISSUER:'https://issuer.example',
+      OIDC_AUDIENCE:'api',OIDC_JWKS_URL:'https://issuer.example/jwks'};
+    expect(()=>config({...base,AUTH_METHODS:'google'})).toThrow('OIDC authorization configuration');
+    expect(()=>config({...base,AUTH_METHODS:'google,google',OIDC_AUTHORIZATION_URL:'https://issuer.example/authorize',OIDC_CLIENT_ID:'client'}))
+      .toThrow('unique');
+    expect(config({...base,AUTH_METHODS:'password,google',OIDC_AUTHORIZATION_URL:'https://issuer.example/authorize',
+      OIDC_CLIENT_ID:'client'}).authMethods).toEqual(['password','google']);
+  });
 });

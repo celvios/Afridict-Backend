@@ -7,7 +7,7 @@ import type { Config } from '../src/platform/config.js';
 
 export const demoConfig: Config = { environment: 'test', host: '127.0.0.1', port: 3000,
   authMode: 'demo', corsOrigins: ['http://localhost:5173','http://localhost:3001'], docs: true, logger: false,
-  financialMode: 'synthetic' };
+  financialMode: 'synthetic',authMethods:[] };
 export const personas: Record<string, string[]> = {
   trader: ['user'], creator: ['user','market_creator'], other_creator: ['user','market_creator'],
   approver: ['user','market_approver'], legal: ['user','legal_reviewer'], integrity: ['user','integrity_reviewer'],
