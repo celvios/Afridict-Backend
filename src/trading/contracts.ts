@@ -10,7 +10,7 @@ export const FillSchema=object({id:UUID,market_id:UUID,maker_order_id:UUID,taker
 {$id:'ClobFill',description:'Immutable execution at the resting order price. Each fill escrows both counterparties\' collateral and records per-share fees.'});
 export const PositionSchema=object({market_id:UUID,outcome_id:Type.String(),side:Type.String({enum:['buy','sell']}),
   quantity:Uint,collateral_minor:Uint,fees_minor:Uint},
-{$id:'ClobPosition',description:'Account-owned unsettled outcome exposure derived from immutable fills. Buy claims the selected outcome and sell claims its complement. Collateral is escrowed; redemption is not implemented.'});
+{$id:'ClobPosition',description:'Account-owned unsettled outcome exposure derived from immutable unredeemed fills. Buy claims the selected outcome and sell claims its complement. Collateral is escrowed until governed redemption.'});
 const Level=object({price:Uint,quantity:Uint});
 export const BookSchema=object({market_id:UUID,outcome_id:Type.String(),status:Type.String({enum:['open','halted']}),
   sequence:Uint,bids:Type.Array(Level),asks:Type.Array(Level)},
@@ -18,7 +18,8 @@ export const BookSchema=object({market_id:UUID,outcome_id:Type.String(),status:T
 export const TradingStateSchema=object({market_id:UUID,asset_code:Type.String(),
   status:Type.String({enum:['open','halted']}),sequence:Uint},{$id:'ClobTradingState'});
 export const MarketEventSchema=object({sequence:Uint,event_type:Type.String({enum:[
-  'activated','halted','order_accepted','fill','order_cancelled']}),
+  'activated','halted','order_accepted','fill','order_cancelled','resolution_proposed',
+  'resolution_challenged','resolution_finalized','redemption_batch']}),
   order_id:Type.Union([UUID,Type.Null()]),fill_id:Type.Union([UUID,Type.Null()])},
 {$id:'ClobMarketEvent'});
 export const tradingSchemas=[OrderSchema,FillSchema,PositionSchema,BookSchema,TradingStateSchema,MarketEventSchema];

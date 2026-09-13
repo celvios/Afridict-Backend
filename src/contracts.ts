@@ -9,7 +9,8 @@ export const Uint = Type.String({ pattern: '^(0|[1-9][0-9]*)$', maxLength: 78,
 const signed = Type.String({ pattern: '^(0|-?[1-9][0-9]*)$', maxLength: 78 });
 export const Country = Type.String({ pattern: '^[A-Z]{2}$', description: 'Country code. ZZ is reserved for the isolated synthetic demo.' });
 export const Roles = ['user', 'market_creator', 'market_approver', 'legal_reviewer', 'integrity_reviewer',
-  'resolution_reviewer', 'compliance_officer', 'market_proposer', 'auditor', 'finance_operator'] as const;
+  'resolution_reviewer', 'resolution_proposer', 'resolution_finalizer', 'compliance_officer',
+  'market_proposer', 'auditor', 'finance_operator'] as const;
 export const ErrorSchema = object({
   code: text('Stable error code; branch on this field, not message. Unknown codes must be handled safely.', 80),
   message: text('Safe explanation without provider payloads, identity evidence, or stack traces.'),
@@ -20,7 +21,7 @@ export const AccountSchema = object({ id: UUID, jurisdiction: Country,
   roles: Type.Array(Type.String({ enum: [...Roles] })), created_at: Timestamp }, { $id: 'Account' });
 export const EligibilitySchema = object({ account_id: UUID,
   status: Type.String({ enum: ['pending', 'eligible', 'restricted'] }), policy_version: text('Version of the applied eligibility policy.', 100),
-  trading_enabled: Type.Boolean({ description: 'False in this release: execution and real-money activation are not implemented.' }),
+  trading_enabled: Type.Boolean({ description: 'Production trading remains disabled. Synthetic demo book status is returned by the book endpoint.' }),
   reason_codes: Type.Array(Type.String()), updated_at: Timestamp }, { $id: 'Eligibility' });
 const CapabilityDecisionSchema = object({ allowed: Type.Boolean(), requirements: Type.Array(Type.String({ enum:
   ['EMAIL_VERIFICATION','PHONE_VERIFICATION','IDENTITY_VERIFICATION','FUNDING_ELIGIBILITY','JURISDICTION_POLICY','RISK_REVIEW','CAPABILITY_NOT_ACTIVE'] })) });
@@ -84,13 +85,13 @@ export const Terms = object({
   liquidity: object({ clob: Type.Literal(true), amm_enabled: Type.Boolean(), rfq_enabled: Type.Boolean(),
     subsidy_limit_minor: Uint, inventory_limit_minor: Uint, loss_limit_minor: Uint,
     max_slippage_bps: Type.Integer({ minimum: 0, maximum: 10000 }) }),
-}, { $id: 'MarketTerms', description: 'Versioned public market policy. Binary requires yes/no outcomes; scalar requires short/long and scalar_range; categorical requires unique outcomes. Publication fixes the complete policy hash. No endpoint in this release activates trading.' });
+}, { $id: 'MarketTerms', description: 'Versioned public market policy. Binary requires yes/no outcomes; scalar requires short/long and scalar_range; categorical requires unique outcomes. Publication fixes the complete policy hash. Only the synthetic demo may activate trading.' });
 export type MarketTerms = Static<typeof Terms>;
 export const MarketSchema = object({ id: UUID, state: Type.String({ enum: ['draft', 'review', 'rejected', 'scheduled'] }),
   version: Type.Integer({ minimum: 1 }), policy_hash: Type.String({ pattern: '^[a-f0-9]{64}$' }),
   terms: Type.Ref(Terms), created_at: Timestamp, updated_at: Timestamp,
   published_at: Type.Union([Timestamp, Type.Null()]), trading_enabled: Type.Literal(false),
-}, { $id: 'Market', description: 'Market metadata. Scheduled publication is distinct from chain creation and trading activation. Neither is performed by this release.' });
+}, { $id: 'Market', description: 'Market metadata. Scheduled publication is distinct from chain creation and trading activation. The synthetic book has its own status; production trading remains disabled.' });
 export const ProposalSchema = object({ id: UUID, status: Type.String({ enum: ['submitted', 'accepted', 'rejected'],
   description: 'accepted means an internal creator adopted the proposal into a draft. It does not mean the market is published or approved.' }),
   terms: Type.Ref(Terms), created_at: Timestamp }, { $id: 'MarketProposal' });

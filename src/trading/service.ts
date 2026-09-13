@@ -263,7 +263,9 @@ export async function listPositions(sql:Sql,ownerId:string,marketId:string) {
       sum(CASE WHEN o.side='buy' THEN f.buyer_collateral ELSE f.seller_collateral END)::text AS collateral_minor,
       sum(CASE WHEN o.side='buy' THEN f.buyer_fee ELSE f.seller_fee END)::text AS fees_minor
     FROM clob_fills f JOIN clob_orders o ON o.id IN (f.maker_order_id,f.taker_order_id)
-    WHERE f.market_id=$1 AND o.owner_id=$2 GROUP BY f.outcome_id,o.side ORDER BY f.outcome_id,o.side`,
+    WHERE f.market_id=$1 AND o.owner_id=$2 AND NOT EXISTS
+      (SELECT 1 FROM resolution_redemptions r WHERE r.fill_id=f.id)
+    GROUP BY f.outcome_id,o.side ORDER BY f.outcome_id,o.side`,
   [marketId,ownerId])).rows;
   return {items:rows.map(row=>({market_id:marketId,...row}))};
 }
