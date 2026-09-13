@@ -10,6 +10,8 @@ import { Transform } from 'node:stream';
 import type { Config } from './platform/config.js';
 import type { Database, Sql } from './platform/database.js';
 import { AppError, requireCondition } from './platform/errors.js';
+import { createErrorReporter } from './platform/error-reporting.js';
+import { loggingConfiguration } from './platform/logging.js';
 import { command, hash, record } from './platform/commands.js';
 import { findAccount, hasRole, oidcAuthenticator, publicAccount, type Account, type Authenticator, type Principal } from './identity/auth.js';
 import { schemas, AccountSchema, EligibilitySchema, ErrorSchema, IdParams, IdempotencyHeaders,
@@ -69,7 +71,8 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
   if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
-  const app = Fastify({ logger: cfg.logger ? { level: 'info', redact: ['req.headers.authorization', 'req.headers.cookie', 'req.body', 'res.headers.set-cookie'] } : false,
+  const errorReporter = createErrorReporter(cfg);
+  const app = Fastify({ logger: loggingConfiguration(cfg.logger),
     logController: new LogController({ disableRequestLogging: true }), requestIdHeader: false, genReqId: () => `req_${randomUUID()}`,
     bodyLimit: 32768, requestTimeout: 15000, connectionTimeout: 10000,
     ajv: { customOptions: { removeAdditional: false, coerceTypes: 'array', allErrors: false } } });
@@ -112,12 +115,16 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     else if (['40001','40P01','55P03','57014','ECONNREFUSED','ECONNRESET','ETIMEDOUT','57P01','08006'].includes(failure.code ?? '')) {
       status = 503; code = 'DEPENDENCY_UNAVAILABLE'; message = 'The operation is temporarily unavailable. Retry commands with the same idempotency key.';
     }
-    if (status >= 500) request.log.error({ request_id: request.id, code }, 'request failed');
+    if (status >= 500) {
+      request.log.error({ request_id: request.id, operation: request.routeOptions.schema?.operationId, code }, 'request failed');
+      errorReporter.capture(error, { requestId: request.id, operation: request.routeOptions.schema?.operationId, code });
+    }
     if (status === 401) reply.header('WWW-Authenticate', 'Bearer');
     if (status === 503) reply.header('Retry-After', '2');
     return reply.code(status).send({ code, message, request_id: request.id });
   });
   app.setNotFoundHandler((request, reply) => reply.code(404).send({ code: 'NOT_FOUND', message: 'Route not found.', request_id: request.id }));
+  app.addHook('onClose', async () => { await errorReporter.flush(2000); });
   const principal = async (request: Request) => {
     const header = request.headers.authorization;
     requireCondition(header, 401, 'UNAUTHENTICATED', 'A valid bearer access token is required.');
