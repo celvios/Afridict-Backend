@@ -36,6 +36,8 @@ import type { FiatDependencies } from './funding/swervpay.js';
 import {approveNgnPayout,completeNgnPayout,createFiatDeposit,getFiatDeposit,listNgnPayouts,requestNgnWithdrawal} from './funding/fiat.js';
 import {approveCryptoWithdrawal,createCryptoWithdrawal,listCryptoReviews,listCryptoWithdrawals,publicTokenAsset,
   recordCryptoSubmission,type TokenAssetRow} from './funding/crypto.js';
+import {BookSchema,FillSchema,MarketEventSchema,OrderSchema,PositionSchema,TradingStateSchema,tradingSchemas} from './trading/contracts.js';
+import {activateClob,cancelOrder,haltClob,listFills,listOrders,listPositions,marketEvents,orderBook,submitOrder} from './trading/service.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -70,11 +72,11 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   await app.register(swagger, { openapi: { openapi: '3.1.1',
     info: { title: 'Afridict Backend API', version: '0.4.0', description: 'Identity, governance and financial workflow API. Financial commands execute only in the isolated synthetic demo; no real payment partner, chain indexer, custody activation, trading or resolution is available. Production access requires approved adapters and governance.' },
     servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development only; not a production address' }],
-    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic'].map(name => ({ name, description: `${name} operations` })),
+    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic','Trading'].map(name => ({ name, description: `${name} operations` })),
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
       description: 'OIDC access token verified against configured issuer, audience and JWKS. Roles come from server-owned account records. Demo mode accepts only synthetic demo.<persona> selectors; those never work in production.' } } },
   }, refResolver: { buildLocalReference: json => String(json.$id) } });
-  for (const schema of [...schemas,...financialSchemas]) app.addSchema(schema);
+  for (const schema of [...schemas,...financialSchemas,...tradingSchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
   app.addHook('preParsing',async(request,_reply,payload)=>{
@@ -553,6 +555,65 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
       accountAddress:wallet.address,finalityPolicyRef:'demo:finality-v1'},actor.id,request.id)};
   }));
 
+  const syntheticTrading=()=>requireCondition(cfg.environment!=='production' && cfg.authMode==='demo' &&
+    cfg.financialMode==='synthetic',403,'TRADING_NOT_ACTIVE','Trading is available only in the isolated synthetic demo.');
+  const bookParams=object({id:UUID,outcome:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'})});
+  app.post('/v1/admin/markets/:id/trading/activate',{schema:contract('activateSyntheticClob','Trading',
+    'Activate the governed synthetic order book','Requires market_approver, a published market inside its trading window, every published jurisdiction enabled for trading and a registry-approved synthetic asset binding. Cannot reopen a halted book. Production trading remains disabled.',
+    Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({asset_code:Type.String({minLength:1,maxLength:32})})})},
+    run(['market_approver'],async({sql,actor,request})=>{
+      syntheticTrading();const result=await activateClob(sql,actor,id(request),(request.body as {asset_code:string}).asset_code,request.id);
+      return {status:200,body:result};
+    }));
+  app.post('/v1/admin/markets/:id/trading/halt',{schema:contract('haltSyntheticClob','Trading',
+    'Halt the synthetic order book','Halts admissions immediately. Existing orders can still be cancelled; reopening requires a future governed recovery workflow.',
+    Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({})})},
+    run(['market_approver'],async({sql,actor,request})=>{
+      syntheticTrading();return {status:200,body:await haltClob(sql,actor,id(request),request.id)};
+    }));
+  app.get('/v1/markets/:id/book/:outcome',{schema:contract('getSyntheticOrderBook','Trading',
+    'Read an aggregated outcome order book','Public, sequenced price levels. Retain the snapshot sequence, then fetch subsequent market events; refetch a snapshot if an event window was missed. A published market starts halted.',
+    Type.Ref(BookSchema),{params:bookParams,public:true})},async req=>{
+    const p=req.params as {id:string;outcome:string};return db.transaction(sql=>orderBook(sql,p.id,p.outcome));
+  });
+  app.get('/v1/markets/:id/trading/events',{schema:contract('listSyntheticMarketEvents','Trading',
+    'Resume sequenced market events','Append-only event cursor for order admission, fills, cancellation and halts. The feed never includes another customer\'s identity. Continue with next_sequence while has_more is true; refetch the book if your client lost its cursor.',
+    object({market_id:UUID,items:Type.Array(Type.Ref(MarketEventSchema)),next_sequence:Uint,has_more:Type.Boolean()}),
+    {params:IdParams,public:true,querystring:object({after:Type.Optional(Uint)})})},
+    async req=>marketEvents(db,id(req),(req.query as {after?:string}).after??'0'));
+  app.post('/v1/markets/:id/orders',{schema:contract('submitSyntheticLimitOrder','Trading',
+    'Submit a fully collateralized limit order','Synthetic demo only. One integer share pays 1,000,000 collateral minor units under the published outcome policy. Buy funds the selected outcome; sell funds its complement. Both sides reserve worst-case price plus additive per-share fees. Resting price, then admission sequence, determines execution priority. Reuse the original idempotency key after a timeout.',
+    object({order:Type.Ref(OrderSchema),fills:Type.Array(Type.Ref(FillSchema))}),{params:IdParams,command:true,status:201,
+      body:object({outcome_id:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'}),
+        side:Type.String({enum:['buy','sell']}),limit_price:Uint,quantity:Uint})})},
+    run([],async({sql,actor,request})=>{
+      syntheticTrading();const result=await submitOrder(sql,actor,id(request),request.body as {
+        outcome_id:string;side:'buy'|'sell';limit_price:string;quantity:string},request.id);
+      return {status:201,body:result};
+    }));
+  app.get('/v1/markets/:id/orders',{schema:contract('listMySyntheticOrders','Trading',
+    'Read your market orders','Returns your latest 100 limit orders including remaining quantity and terminal state.',
+    object({items:Type.Array(Type.Ref(OrderSchema))}),{params:IdParams})},async req=>{
+    const {a}=await authenticated(req);return listOrders(db,a.id,id(req));
+  });
+  app.get('/v1/markets/:id/fills',{schema:contract('listMySyntheticFills','Trading',
+    'Read your market executions','Returns your latest 100 immutable fills; other customers\' identities are excluded.',
+    object({items:Type.Array(Type.Ref(FillSchema))}),{params:IdParams})},async req=>{
+    const {a}=await authenticated(req);return listFills(db,a.id,id(req));
+  });
+  app.get('/v1/markets/:id/positions',{schema:contract('listMySyntheticPositions','Trading',
+    'Read your unsettled outcome positions','Derived from immutable fills. Buy positions claim the selected outcome; sell positions claim its complement. Positions remain locked in market escrow until a future governed resolution and redemption workflow.',
+    object({items:Type.Array(Type.Ref(PositionSchema))}),{params:IdParams})},async req=>{
+    const {a}=await authenticated(req);return listPositions(db,a.id,id(req));
+  });
+  app.post('/v1/markets/:id/orders/:orderId/cancel',{schema:contract('cancelSyntheticOrder','Trading',
+    'Cancel remaining order quantity','Atomically fences matching and releases only the unfilled reservation. Partially filled contracts stay in market escrow pending governed resolution. Cancellation remains available after a trading halt.',
+    Type.Ref(OrderSchema),{params:object({id:UUID,orderId:UUID}),command:true,body:object({})})},
+    run([],async({sql,actor,request})=>{
+      syntheticTrading();const params=request.params as {id:string;orderId:string};
+      const order=await cancelOrder(sql,actor,params.id,params.orderId,request.id);
+      return {status:200,body:order};
+    }));
   app.get('/v1/market-templates', { schema: contract('listMarketTemplates','Markets','List approved market templates','Returns only approved registry entries. Production starts with no approved templates; the demo seeds explicitly synthetic templates. Template approval is an operational governance decision.', object({ items: Type.Array(object({ id: Type.String(), version: Type.Integer(), market_type: Type.String({ enum: ['binary','categorical','scalar'] }) })) }), { public: true }) }, async () => ({ items: (await db.query('SELECT id,version,market_type FROM market_templates WHERE approved=true ORDER BY id,version')).rows }));
   app.get('/v1/admin/evidence-sources', { schema: contract('listApprovedEvidenceSources','Governance','List approved evidence sources','Market creators and reviewers select primary and fallback sources from this registry. The URLs are references only and are not fetched by this API.', object({ items: Type.Array(object({ name: Type.String(), uri: Type.String() })) }),
     { roles: ['market_creator','market_approver','legal_reviewer','integrity_reviewer','resolution_reviewer','auditor'] }) }, async req => {
