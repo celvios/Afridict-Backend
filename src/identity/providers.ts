@@ -11,7 +11,7 @@ export interface EmailProvider {
 }
 export type IdentityState='NOT_STARTED'|'PENDING'|'IN_REVIEW'|'VERIFIED'|'FAILED'|'REQUIRES_RETRY';
 export interface IdentityVerificationProvider {
-  createSession(input:{accountId:string;reference:string}):Promise<{providerReference:string;clientToken:string;expiresAt:string}>;
+  createSession(input:{accountId:string;idempotencyKey:string}):Promise<{providerReference:string;clientToken:string;expiresAt:string|null}>;
   getState(providerReference:string):Promise<{state:IdentityState;evidenceReference:string}>;
 }
 
@@ -56,5 +56,38 @@ export class TwilioVerifyProvider implements ContactVerificationProvider {
       if (error instanceof Error&&error.message==='TWILIO_VERIFY_404') return 'expired';
       throw error;
     }
+  }
+}
+
+export function normalizePersonaState(status:string):IdentityState {
+  if(['created','pending','completed'].includes(status))return 'PENDING';
+  if(status==='needs_review'||status==='needs review')return 'IN_REVIEW';
+  if(status==='approved')return 'VERIFIED';
+  if(status==='declined')return 'FAILED';
+  if(['failed','expired'].includes(status))return 'REQUIRES_RETRY';
+  throw new Error('PERSONA_UNKNOWN_STATUS');
+}
+
+export class PersonaIdentityProvider implements IdentityVerificationProvider {
+  constructor(private readonly options:{apiKey:string;templateId:string;version:string;timeoutMs?:number},
+    private readonly request:Fetch=globalThis.fetch) {
+    if(!options.apiKey||!options.templateId||!/^\d{4}-\d{2}-\d{2}$/.test(options.version))throw new Error('Invalid Persona configuration');
+  }
+  private async call(path:string,init:RequestInit={}) {
+    const response=await this.request(`https://api.withpersona.com/api/v1/${path}`,{...init,headers:{authorization:`Bearer ${this.options.apiKey}`,
+      'content-type':'application/json','persona-version':this.options.version,...init.headers},signal:AbortSignal.timeout(this.options.timeoutMs??5000)});
+    if(!response.ok)throw new Error(`PERSONA_${response.status}`);
+    return response.json() as Promise<{data:{id:string;attributes:{status:string}};meta?:{'session-token'?:string}}>;
+  }
+  async createSession(input:{accountId:string;idempotencyKey:string}) {
+    const result=await this.call('inquiries',{method:'POST',headers:{'idempotency-key':input.idempotencyKey},body:JSON.stringify({data:{
+      attributes:{'inquiry-template-id':this.options.templateId,'reference-id':input.accountId}}})});
+    const clientToken=result.meta?.['session-token'];
+    if(!result.data.id||!clientToken)throw new Error('PERSONA_INVALID_RESPONSE');
+    return {providerReference:result.data.id,clientToken,expiresAt:null};
+  }
+  async getState(providerReference:string) {
+    const result=await this.call(`inquiries/${encodeURIComponent(providerReference)}`);
+    return {state:normalizePersonaState(result.data.attributes.status),evidenceReference:`persona:${result.data.id}`};
   }
 }
