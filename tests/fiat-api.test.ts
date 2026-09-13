@@ -16,6 +16,8 @@ const provider:FiatRailProvider={
   createCollection:vi.fn(),createPayout:vi.fn(),getPayout:vi.fn(),
 };
 const auth={authorization:'Bearer demo.trader'};
+const financeAuth={authorization:'Bearer demo.finance'};
+const dataEncryptionKey=Buffer.alloc(32,7);
 beforeAll(async()=>{db=await embeddedDatabase();await migrate(db);const ids=await seedDemo(db);
   await db.query("UPDATE eligibility SET status='eligible',policy_version='synthetic:eligible' WHERE account_id=$1",[ids.trader]);
   await db.query("UPDATE fiat_rail_registry SET approved=true,collections_enabled=true,payouts_enabled=(asset_code='NGN'),reviewed_at=now() WHERE provider='swervpay'");
@@ -23,7 +25,7 @@ beforeAll(async()=>{db=await embeddedDatabase();await migrate(db);const ids=awai
     await postJournal(sql,{effectId:'synthetic:ngn-opening',asset:'NGN',kind:'financial_correction',referenceId:'synthetic-fixture',reason:'Synthetic test balance',
       lines:[{account:escrow,debit:100000n,credit:0n},{account:available,debit:0n,credit:100000n}]});});
   app=await buildApp(db,demoConfig,demoAuth,undefined,undefined,undefined,{provider,environment:'sandbox',
-    dataHashKey:['synthetic','bank','data','hash','key','for','tests'].join(':')});});
+    dataHashKey:['synthetic','bank','data','hash','key','for','tests'].join(':'),dataEncryptionKey,keyVersion:'test-v1'});});
 afterAll(async()=>{await app.close();await db.close();});
 
 describe('fiat provider API boundary',()=>{
@@ -70,22 +72,37 @@ describe('fiat provider API boundary',()=>{
     const held=await app.inject({method:'GET',url:`/v1/fiat/deposit-intents/${id}`,headers:auth});
     expect(held.json()).toMatchObject({state:'instruction_uncertain',instructions:null});
   });
-  it('submits one idempotent NGN payout and persists only a masked destination',async()=>{
+  it('queues an idempotent NGN request for one finance administrator to approve',async()=>{
     vi.mocked(provider.createPayout).mockImplementation(async input=>({id:`payout_${input.reference}`,reference:input.reference}));
     const request={method:'POST' as const,url:'/v1/fiat/payouts',headers:{...auth,'idempotency-key':'fiat-payout-stable'},
       payload:{amount_minor:'25000',bank_code:'999',account_number:'0000000000',narration:'Afridict withdrawal'}};
     const [first,retry]=await Promise.all([app.inject(request),app.inject(request)]);expect(first.statusCode,first.body).toBe(202);expect(retry.statusCode,retry.body).toBe(202);
-    const final=first.json().state==='submitted'?first.json():retry.json();expect(final).toMatchObject({asset:'NGN',amount_minor:'25000',state:'submitted',rail:'swervpay'});
-    expect(provider.createPayout).toHaveBeenCalledTimes(1);
-    const row=(await db.query<{destination_ref:string}>('SELECT destination_ref FROM withdrawals WHERE id=$1',[final.id])).rows[0]!;
+    expect(retry.json()).toEqual(first.json());const pending=first.json();expect(pending).toMatchObject({asset:'NGN',amount_minor:'25000',state:'reserved',rail:'swervpay'});
+    expect(provider.createPayout).not.toHaveBeenCalled();
+    const row=(await db.query<{destination_ref:string}>('SELECT destination_ref FROM withdrawals WHERE id=$1',[pending.id])).rows[0]!;
     expect(row.destination_ref).toContain('******0000');expect(row.destination_ref).not.toContain('0000000000');
+    const stored=await db.query('SELECT * FROM private_payout_details');expect(JSON.stringify(stored.rows)).not.toContain('0000000000');
+    const queue=await app.inject({method:'GET',url:'/v1/admin/fiat/payouts?state=reserved',headers:financeAuth});
+    expect(queue.statusCode,queue.body).toBe(200);expect(queue.json().items[0]).toMatchObject({id:pending.id,
+      bank:{account_name:'Synthetic Recipient',account_number:'0000000000'}});
+    const approval={method:'POST' as const,url:`/v1/admin/fiat/payouts/${pending.id}/approve`,headers:{...financeAuth,
+      'idempotency-key':'fiat-admin-approval'},payload:{reason:'Reviewed resolved account and available balance'}};
+    const [approved,replayed]=await Promise.all([app.inject(approval),app.inject(approval)]);
+    expect(approved.statusCode,approved.body).toBe(202);expect(replayed.statusCode,replayed.body).toBe(202);
+    expect([approved.json().state,replayed.json().state]).toContain('submitted');expect(provider.createPayout).toHaveBeenCalledTimes(1);
+    const submitted=approved.json().state==='submitted'?approved.json():replayed.json();
+    const completed=await app.inject({method:'POST',url:`/v1/admin/fiat/payouts/${submitted.id}/complete`,headers:{...financeAuth,
+      'idempotency-key':'fiat-admin-complete'},payload:{provider_reference:`payout_${submitted.id}`,reason:'Verified successful in Swervpay dashboard'}});
+    expect(completed.statusCode,completed.body).toBe(200);expect(completed.json().state).toBe('finalized');
   });
   it('keeps NGN reserved when the payout response is ambiguous',async()=>{
     vi.mocked(provider.createPayout).mockRejectedValueOnce(new Error('provider connection closed'));
-    const response=await app.inject({method:'POST',url:'/v1/fiat/payouts',headers:{...auth,'idempotency-key':'fiat-payout-uncertain'},
+    const requested=await app.inject({method:'POST',url:'/v1/fiat/payouts',headers:{...auth,'idempotency-key':'fiat-payout-uncertain'},
       payload:{amount_minor:'10000',bank_code:'999',account_number:'0000000000',narration:'Afridict withdrawal'}});
+    const response=await app.inject({method:'POST',url:`/v1/admin/fiat/payouts/${requested.json().id}/approve`,headers:{...financeAuth,
+      'idempotency-key':'fiat-admin-uncertain'},payload:{reason:'Reviewed resolved account and available balance'}});
     expect(response.statusCode,response.body).toBe(202);expect(response.json()).toMatchObject({state:'uncertain',amount_minor:'10000'});
     const wallet=await app.inject({method:'GET',url:'/v1/wallets',headers:auth}),ngn=wallet.json().items.find((item:{currency:string})=>item.currency==='NGN');
-    expect(ngn).toMatchObject({available_minor:'65000',withdrawal_pending_minor:'35000'});
+    expect(ngn).toMatchObject({available_minor:'65000',withdrawal_pending_minor:'10000'});
   });
 });

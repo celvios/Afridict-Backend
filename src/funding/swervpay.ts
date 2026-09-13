@@ -1,6 +1,6 @@
 import { integer } from '../financial/model.js';
 
-export type FiatCurrency='NGN'|'USD';
+export type FiatCurrency='NGN';
 export interface Bank {code:string;name:string}
 export interface ResolvedBankAccount {accountName:string;accountNumber:string;bankCode:string;bankName:string}
 export interface CollectionInstruction {id:string;reference:string;currency:FiatCurrency;accountName:string;
@@ -14,7 +14,7 @@ export interface FiatRailProvider {
   createPayout(input:{currency:'NGN';amountMinor:string;reference:string;bankCode:string;accountNumber:string;narration:string}):Promise<PayoutSubmission>;
   getPayout(id:string):Promise<{id:string;reference:string;status:string}>;
 }
-export type FiatDependencies={provider:FiatRailProvider;environment:'sandbox';dataHashKey:string};
+export type FiatDependencies={provider:FiatRailProvider;environment:'sandbox';dataHashKey:string;dataEncryptionKey:Buffer;keyVersion:string};
 
 type Fetch=typeof globalThis.fetch;
 type Json=Record<string,unknown>;
