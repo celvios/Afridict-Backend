@@ -5,6 +5,9 @@ export const FinancialAssetSchema=object({code:Type.String({pattern:'^[A-Z0-9_]{
   synthetic:Type.Boolean(),funding_enabled:Type.Boolean(),withdrawal_enabled:Type.Boolean()},{$id:'FinancialAsset'});
 export const BalanceSchema=object({asset:Type.String(),available_minor:Uint,reserved_minor:Uint,withdrawal_pending_minor:Uint,
   spendable:Type.Literal(false)},{$id:'CollateralBalance',description:'Exact off-chain balances. Real trading is not active. Pending partner or chain deposits never appear as available.'});
+export const FiatWalletSchema=object({currency:Type.String({enum:['NGN','USD']}),scale:Type.Literal(2),available_minor:Uint,
+  reserved_minor:Uint,withdrawal_pending_minor:Uint,funding_enabled:Type.Boolean(),withdrawal_enabled:Type.Boolean()},
+  {$id:'FiatWallet',description:'Currency-separated ledger projection. Values are integer minor units: kobo for NGN and cents for USD.'});
 export const DepositSchema=object({id:UUID,asset:Type.String(),target_minor:Uint,
   state:Type.String({enum:['awaiting_partner','partner_confirmed','chain_observed','reconciled_available','expired','exception']}),
   expires_at:Timestamp,created_at:Timestamp,updated_at:Timestamp,
@@ -24,4 +27,4 @@ export const SmartAccountSchema=object({chain_id:Uint,address:Type.String({patte
   status:Type.String({enum:['provisioning','active','recovery_pending','suspended']}),
   recovery:Type.Literal('identity_provider'),financial_mode:Type.String({enum:['disabled','synthetic']})},
   {$id:'SmartAccount',description:'The caller own embedded account metadata. No session keys or recovery secrets are exposed.'});
-export const financialSchemas=[FinancialAssetSchema,BalanceSchema,DepositSchema,WithdrawalSchema,ReconciliationSchema,StatementSchema,SmartAccountSchema];
+export const financialSchemas=[FinancialAssetSchema,BalanceSchema,FiatWalletSchema,DepositSchema,WithdrawalSchema,ReconciliationSchema,StatementSchema,SmartAccountSchema];
