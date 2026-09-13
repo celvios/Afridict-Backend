@@ -40,6 +40,7 @@ npm audit --omit=dev --audit-level=high
 - `api/openapi.json` is the generated OpenAPI 3.1 HTTP contract.
 - `api/client-types.ts` contains generated TypeScript client types.
 - `docs/ARCHITECTURE.md` explains system boundaries and data authority.
+- `docs/IMPLEMENTATION_INVENTORY.md` records completed, partial, and missing work plus the PR sequence.
 - `docs/adr/` records durable architecture decisions.
 - `docs/DELIVERY_PLAN.md` records implementation order and activation gates.
 
