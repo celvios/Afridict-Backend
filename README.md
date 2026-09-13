@@ -15,7 +15,7 @@ npm run demo
 
 Open `http://127.0.0.1:3000/docs`. The demo binds to loopback, resets its embedded PostgreSQL database on restart, and uses synthetic `demo.<persona>` selectors. Never expose it publicly.
 
-For PostgreSQL development, copy `.env.example` to an untracked `.env`, set a local `POSTGRES_PASSWORD`, then run:
+For PostgreSQL development, copy `.env.example` to an untracked `.env`. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching `afridict` connection on `127.0.0.1:5432`, then run:
 
 ```bash
 docker compose up -d postgres
@@ -46,5 +46,7 @@ npm audit --omit=dev --audit-level=high
 - `docs/IMPLEMENTATION_INVENTORY.md` records completed, partial, and missing work plus the PR sequence.
 - `docs/adr/` records durable architecture decisions.
 - `docs/DELIVERY_PLAN.md` records implementation order and activation gates.
+- `CONTRIBUTING.md` defines the change, review, and fresh-clone verification workflow.
+- `CHANGELOG.md` records externally meaningful behavior and operational changes.
 
 Financial amounts cross APIs as exact integer strings. Clients must reuse the same idempotency key and body when retry behavior permits it, treat pending/uncertain states explicitly, and never infer settlement from a webhook or transaction hash.
