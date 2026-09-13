@@ -21,7 +21,8 @@ import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
 import { financialSchemas, FinancialAssetSchema, BalanceSchema, DepositSchema, WithdrawalSchema,
-  ReconciliationSchema, StatementSchema, SmartAccountSchema,FiatWalletSchema } from './funding/contracts.js';
+  ReconciliationSchema, StatementSchema, SmartAccountSchema,FiatWalletSchema,BankSchema,ResolvedBankAccountSchema,
+  FiatDepositSchema } from './funding/contracts.js';
 import { applyPartnerDeposit, createDepositIntent, createWithdrawal, cancelWithdrawal, finalizeDeposit,
   finalizeWithdrawal, markWithdrawalUncertain, publicDeposit, publicWithdrawal, submitWithdrawal,
   type PartnerVerifier } from './funding/service.js';
@@ -31,11 +32,13 @@ import { accountAssurance, evaluateCapabilities } from './identity/capabilities.
 import { registerProfile } from './identity/registration.js';
 import { checkContactCode,sendContactCode,type ContactDependencies } from './identity/contact.js';
 import { applyPersonaEvent,createIdentitySession,verifyPersonaSignature,type PersonaDependencies } from './identity/persona.js';
+import type { FiatDependencies } from './funding/swervpay.js';
+import {createFiatDeposit,getFiatDeposit,requestFiatPayout} from './funding/fiat.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
 type Work = (context: Context) => Promise<{ status: number; body: unknown }>;
-const errorResponses: Record<number, TSchema> = Object.fromEntries([400,401,403,404,409,413,415,422,429,500,503]
+const errorResponses: Record<number, TSchema> = Object.fromEntries([400,401,403,404,409,413,415,422,429,500,502,503]
   .map(code => [code, Type.Ref(ErrorSchema)]));
 function contract(id: string, tag: string, summary: string, description: string, response: TSchema,
   options: { body?: TSchema; params?: TSchema; querystring?: TSchema; headers?: TSchema; status?: number; public?: boolean; roles?: string[]; command?: boolean } = {}): FastifySchema {
@@ -49,7 +52,7 @@ function contract(id: string, tag: string, summary: string, description: string,
 }
 
 export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier,
-  contactDependencies?:ContactDependencies,personaDependencies?:PersonaDependencies) {
+  contactDependencies?:ContactDependencies,personaDependencies?:PersonaDependencies,fiatDependencies?:FiatDependencies) {
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
   if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
@@ -323,6 +326,49 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
       WHERE f.code IN ('NGN','USD') AND f.approved=true GROUP BY f.code,f.scale,r.approved,r.collections_enabled,r.payouts_enabled ORDER BY f.code`,[a.id])).rows;
     return {items:rows};
   });
+  app.get('/v1/fiat/banks',{schema:contract('listFiatBanks','Funding','List banks currently reported by the fiat provider',
+    'Returns live sandbox-provider reference data when configured. Availability does not mean payouts are commercially or operationally approved.',
+    object({items:Type.Array(Type.Ref(BankSchema))}))},async req=>{
+    await authenticated(req);requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
+    return {items:await fiatDependencies.provider.listBanks()};
+  });
+  app.post('/v1/fiat/bank-accounts/resolve',{config:{rateLimit:{max:10,timeWindow:'1 minute'}},schema:contract(
+    'resolveFiatBankAccount','Funding','Resolve an NGN bank account with the configured provider',
+    'Requires a verified Afridict identity. The response is returned only to the authenticated caller with no-store caching and is not persisted or included in audit events.',
+    Type.Ref(ResolvedBankAccountSchema),{body:object({bank_code:Type.String({pattern:'^[0-9]{3,10}$'}),account_number:Type.String({pattern:'^[0-9]{10}$'})})})},async req=>{
+      const {a}=await authenticated(req);requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
+      const assurance=await accountAssurance(db,a);requireCondition(assurance.identityStatus==='VERIFIED',403,'IDENTITY_VERIFICATION_REQUIRED','Verified identity is required for bank account resolution.');
+      const body=req.body as {bank_code:string;account_number:string},resolved=await fiatDependencies.provider.resolveAccount({bankCode:body.bank_code,accountNumber:body.account_number});
+      requireCondition(resolved.bankCode===body.bank_code&&resolved.accountNumber===body.account_number,502,'FIAT_PROVIDER_RESPONSE_MISMATCH','The provider returned a different bank account.');
+      return {account_name:resolved.accountName,account_number:resolved.accountNumber,bank_code:resolved.bankCode,bank_name:resolved.bankName};
+    });
+  app.post('/v1/fiat/deposit-intents',{schema:contract('createFiatDepositIntent','Funding','Request NGN or USD deposit instructions',
+    'Commits a local intent and queues provider work. A 202 response does not contain payment instructions and proves no provider account was created. Poll the returned resource; only instructions_available may be shown as payable. instruction_uncertain requires operator reconciliation.',
+    Type.Ref(FiatDepositSchema),{command:true,status:202,body:object({currency:Type.String({enum:['NGN','USD']}),target_minor:Uint})})},
+  run([],async({sql,actor,request})=>{
+    requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
+    const assurance=await accountAssurance(sql,actor);requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
+      403,'FUNDING_ELIGIBILITY_REQUIRED','Verified identity and approved funding eligibility are required.');
+    const body=request.body as {currency:'NGN'|'USD';target_minor:string};
+    return {status:202,body:await createFiatDeposit(sql,{owner:actor.id,currency:body.currency,targetMinor:body.target_minor},request.id)};
+  }));
+  app.get('/v1/fiat/deposit-intents/:id',{schema:contract('getFiatDepositIntent','Funding','Read a fiat deposit instruction workflow',
+    'Only the owner may read the workflow. Poll while pending. Never pay an instruction that is null, expired, uncertain, or outside this authenticated response.',
+    Type.Ref(FiatDepositSchema),{params:IdParams})},async req=>{
+      const {a}=await authenticated(req);return getFiatDeposit(db,a.id,id(req));
+    });
+  app.post('/v1/fiat/payouts',{schema:contract('requestFiatPayout','Funding','Reserve NGN and submit one bank payout',
+    'Requires verified identity, funding eligibility, approved NGN rail and available NGN. The bank account is resolved before reservation but is never persisted. One provider submission is attempted. A timeout returns uncertain and keeps the full amount reserved for reconciliation; retry with the same idempotency key.',
+    Type.Ref(WithdrawalSchema),{command:true,status:202,body:object({amount_minor:Uint,bank_code:Type.String({pattern:'^[0-9]{3,10}$'}),
+      account_number:Type.String({pattern:'^[0-9]{10}$'}),narration:text('Statement narration. Do not include sensitive personal data.',80)})})},async(request,reply)=>{
+      const {a}=await authenticated(request);requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
+      const assurance=await accountAssurance(db,a);requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
+        403,'FUNDING_ELIGIBILITY_REQUIRED','Verified identity and approved funding eligibility are required.');
+      const body=request.body as {amount_minor:string;bank_code:string;account_number:string;narration:string};
+      const result=await requestFiatPayout(db,fiatDependencies.provider,fiatDependencies.dataHashKey,a.id,String(request.headers['idempotency-key']),{
+        amountMinor:body.amount_minor,bankCode:body.bank_code,accountNumber:body.account_number,narration:body.narration},request.id);
+      return reply.code(202).send(result);
+    });
   app.post('/v1/deposit-intents',{schema:contract('createDepositIntent','Funding','Create a synthetic deposit intent',
     'Available only in the loopback synthetic demo. Returns no payment instructions or quote. Partner confirmation alone cannot credit available collateral. A future approved partner adapter and finalized chain observation are required.',
     Type.Ref(DepositSchema),{command:true,status:201,body:object({asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'}),

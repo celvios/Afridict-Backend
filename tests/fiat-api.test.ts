@@ -1,0 +1,91 @@
+import {afterAll,beforeAll,describe,expect,it,vi} from 'vitest';
+import type {FastifyInstance} from 'fastify';
+import {embeddedDatabase} from '../scripts/embedded.js';
+import {demoAuth,demoConfig,seedDemo} from '../scripts/fixtures.js';
+import {buildApp} from '../src/app.js';
+import {migrate} from '../src/platform/migrations.js';
+import type {Database} from '../src/platform/database.js';
+import type {FiatRailProvider} from '../src/funding/swervpay.js';
+import {processFiatCollection} from '../src/funding/fiat.js';
+import {ledgerAccount,postJournal} from '../src/financial/ledger.js';
+
+let db:Database,app:FastifyInstance;
+const provider:FiatRailProvider={
+  listBanks:vi.fn(async()=>[{code:'999',name:'Synthetic Bank'}]),
+  resolveAccount:vi.fn(async({bankCode,accountNumber})=>({accountName:'Synthetic Recipient',accountNumber,bankCode,bankName:'Synthetic Bank'})),
+  createCollection:vi.fn(),createPayout:vi.fn(),getPayout:vi.fn(),
+};
+const auth={authorization:'Bearer demo.trader'};
+beforeAll(async()=>{db=await embeddedDatabase();await migrate(db);const ids=await seedDemo(db);
+  await db.query("UPDATE eligibility SET status='eligible',policy_version='synthetic:eligible' WHERE account_id=$1",[ids.trader]);
+  await db.query("UPDATE fiat_rail_registry SET approved=true,collections_enabled=true,payouts_enabled=(asset_code='NGN'),reviewed_at=now() WHERE provider='swervpay'");
+  await db.transaction(async sql=>{const escrow=await ledgerAccount(sql,null,'NGN','escrow_asset'),available=await ledgerAccount(sql,ids.trader!,'NGN','user_available');
+    await postJournal(sql,{effectId:'synthetic:ngn-opening',asset:'NGN',kind:'financial_correction',referenceId:'synthetic-fixture',reason:'Synthetic test balance',
+      lines:[{account:escrow,debit:100000n,credit:0n},{account:available,debit:0n,credit:100000n}]});});
+  app=await buildApp(db,demoConfig,demoAuth,undefined,undefined,undefined,{provider,environment:'sandbox',
+    dataHashKey:['synthetic','bank','data','hash','key','for','tests'].join(':')});});
+afterAll(async()=>{await app.close();await db.close();});
+
+describe('fiat provider API boundary',()=>{
+  it('lists provider-reported banks for an authenticated caller',async()=>{
+    const response=await app.inject({method:'GET',url:'/v1/fiat/banks',headers:auth});
+    expect(response.statusCode,response.body).toBe(200);expect(response.json()).toEqual({items:[{code:'999',name:'Synthetic Bank'}]});
+  });
+  it('returns a matching bank resolution without persisting account data',async()=>{
+    const response=await app.inject({method:'POST',url:'/v1/fiat/bank-accounts/resolve',headers:auth,
+      payload:{bank_code:'999',account_number:'0000000000'}});
+    expect(response.statusCode,response.body).toBe(200);expect(response.json()).toEqual({account_name:'Synthetic Recipient',
+      account_number:'0000000000',bank_code:'999',bank_name:'Synthetic Bank'});
+    const audit=await db.query('SELECT * FROM audit_events'),outbox=await db.query('SELECT * FROM outbox');
+    expect(JSON.stringify([audit.rows,outbox.rows])).not.toContain('0000000000');
+  });
+  it('rejects malformed account numbers before calling the provider',async()=>{
+    const calls=vi.mocked(provider.resolveAccount).mock.calls.length;
+    const response=await app.inject({method:'POST',url:'/v1/fiat/bank-accounts/resolve',headers:auth,
+      payload:{bank_code:'999',account_number:'123'}});
+    expect(response.statusCode).toBe(400);expect(vi.mocked(provider.resolveAccount).mock.calls).toHaveLength(calls);
+  });
+  it('creates an idempotent pending deposit and exposes instructions only after one worker call',async()=>{
+    vi.mocked(provider.createCollection).mockImplementation(async input=>({id:`collection_${input.reference}`,reference:input.reference,
+      currency:input.currency,accountName:'Afridict Collections',accountNumber:'1111111111',bankCode:'999',bankName:'Synthetic Bank',status:'active'}));
+    const request={method:'POST' as const,url:'/v1/fiat/deposit-intents',headers:{...auth,'idempotency-key':'fiat-deposit-stable'},
+      payload:{currency:'NGN',target_minor:'125050'}};
+    const created=await app.inject(request),replayed=await app.inject(request);expect(created.statusCode,created.body).toBe(202);
+    expect(replayed.json()).toEqual(created.json());expect(created.json()).toMatchObject({currency:'NGN',target_minor:'125050',
+      state:'instruction_pending',instructions:null});
+    const id=created.json<{id:string}>().id;
+    await Promise.all([processFiatCollection(db,provider,id),processFiatCollection(db,provider,id)]);
+    expect(provider.createCollection).toHaveBeenCalledTimes(1);
+    const ready=await app.inject({method:'GET',url:`/v1/fiat/deposit-intents/${id}`,headers:auth});
+    expect(ready.json()).toMatchObject({state:'instructions_available',instructions:{account_number:'1111111111',provider:'swervpay'}});
+  });
+  it('holds an ambiguous collection result for reconciliation without retrying',async()=>{
+    vi.mocked(provider.createCollection).mockRejectedValueOnce(new Error('provider connection closed'));
+    const created=await app.inject({method:'POST',url:'/v1/fiat/deposit-intents',headers:{...auth,'idempotency-key':'fiat-deposit-uncertain'},
+      payload:{currency:'NGN',target_minor:'5000'}}),id=created.json<{id:string}>().id;
+    const before=vi.mocked(provider.createCollection).mock.calls.length;
+    await expect(processFiatCollection(db,provider,id)).rejects.toThrow('provider connection closed');
+    expect(await processFiatCollection(db,provider,id)).toBe('instruction_uncertain');
+    expect(vi.mocked(provider.createCollection).mock.calls).toHaveLength(before+1);
+    const held=await app.inject({method:'GET',url:`/v1/fiat/deposit-intents/${id}`,headers:auth});
+    expect(held.json()).toMatchObject({state:'instruction_uncertain',instructions:null});
+  });
+  it('submits one idempotent NGN payout and persists only a masked destination',async()=>{
+    vi.mocked(provider.createPayout).mockImplementation(async input=>({id:`payout_${input.reference}`,reference:input.reference}));
+    const request={method:'POST' as const,url:'/v1/fiat/payouts',headers:{...auth,'idempotency-key':'fiat-payout-stable'},
+      payload:{amount_minor:'25000',bank_code:'999',account_number:'0000000000',narration:'Afridict withdrawal'}};
+    const [first,retry]=await Promise.all([app.inject(request),app.inject(request)]);expect(first.statusCode,first.body).toBe(202);expect(retry.statusCode,retry.body).toBe(202);
+    const final=first.json().state==='submitted'?first.json():retry.json();expect(final).toMatchObject({asset:'NGN',amount_minor:'25000',state:'submitted',rail:'swervpay'});
+    expect(provider.createPayout).toHaveBeenCalledTimes(1);
+    const row=(await db.query<{destination_ref:string}>('SELECT destination_ref FROM withdrawals WHERE id=$1',[final.id])).rows[0]!;
+    expect(row.destination_ref).toContain('******0000');expect(row.destination_ref).not.toContain('0000000000');
+  });
+  it('keeps NGN reserved when the payout response is ambiguous',async()=>{
+    vi.mocked(provider.createPayout).mockRejectedValueOnce(new Error('provider connection closed'));
+    const response=await app.inject({method:'POST',url:'/v1/fiat/payouts',headers:{...auth,'idempotency-key':'fiat-payout-uncertain'},
+      payload:{amount_minor:'10000',bank_code:'999',account_number:'0000000000',narration:'Afridict withdrawal'}});
+    expect(response.statusCode,response.body).toBe(202);expect(response.json()).toMatchObject({state:'uncertain',amount_minor:'10000'});
+    const wallet=await app.inject({method:'GET',url:'/v1/wallets',headers:auth}),ngn=wallet.json().items.find((item:{currency:string})=>item.currency==='NGN');
+    expect(ngn).toMatchObject({available_minor:'65000',withdrawal_pending_minor:'35000'});
+  });
+});

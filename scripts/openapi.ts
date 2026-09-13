@@ -19,6 +19,7 @@ const descriptions: Record<string,string> = {
   '422': 'Invalid amount, asset, journal, market policy, template, source or policy reference. Correct semantic input before retrying.',
   '429': 'RATE_LIMITED. Observe Retry-After and retry with the original command key.',
   '500': 'INTERNAL_ERROR. Contact support with X-Request-Id; do not assume a command failed to commit.',
+  '502': 'A configured provider returned an invalid or mismatched response. Do not continue with the returned data.',
   '503': 'Dependency, identity, financial integration or partner adapter unavailable. Retry only transient failures with the same command key.',
 };
 for (const path of Object.values(spec.paths)) for (const operation of Object.values(path)) {

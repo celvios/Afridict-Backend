@@ -14,6 +14,7 @@ export interface FiatRailProvider {
   createPayout(input:{currency:'NGN';amountMinor:string;reference:string;bankCode:string;accountNumber:string;narration:string}):Promise<PayoutSubmission>;
   getPayout(id:string):Promise<{id:string;reference:string;status:string}>;
 }
+export type FiatDependencies={provider:FiatRailProvider;environment:'sandbox';dataHashKey:string};
 
 type Fetch=typeof globalThis.fetch;
 type Json=Record<string,unknown>;
