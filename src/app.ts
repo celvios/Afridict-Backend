@@ -14,7 +14,7 @@ import { findAccount, hasRole, oidcAuthenticator, publicAccount, type Account, t
 import { schemas, AccountSchema, EligibilitySchema, ErrorSchema, IdParams, IdempotencyHeaders,
   Terms, MarketSchema, ProposalSchema, ReviewSchema, ReviewCommand, VersionCommand, ListQuery,
   Reason, EvidenceRef, EligibilityReviewSchema, CapabilitiesSchema, AuthenticationConfigurationSchema,
-  RegistrationProfileSchema,Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
+  RegistrationProfileSchema,ContactVerificationSchema,Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
 import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket, mayReadDraft, publicMarket, publish, reviewMarket,
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
@@ -27,6 +27,7 @@ import { walletBalances } from './financial/ledger.js';
 import { reconcile } from './financial/reconciliation.js';
 import { accountAssurance, evaluateCapabilities } from './identity/capabilities.js';
 import { registerProfile } from './identity/registration.js';
+import { checkContactCode,sendContactCode,type ContactDependencies } from './identity/contact.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -44,7 +45,8 @@ function contract(id: string, tag: string, summary: string, description: string,
     response: { [options.status ?? 200]: response, ...errorResponses } } as FastifySchema;
 }
 
-export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier) {
+export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier,
+  contactDependencies?:ContactDependencies) {
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
   if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
@@ -155,6 +157,24 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
         privacy_version:profile.privacy_version,accepted_at:profile.accepted_at}});
     return {status:201,body:profile};
   }));
+  const contactUnavailable=()=>requireCondition(contactDependencies,503,'CONTACT_PROVIDER_UNAVAILABLE','Contact verification is not configured.');
+  for(const channel of ['email','phone'] as const) {
+    app.post(`/v1/auth/${channel}/send-code`,{schema:contract(`send${channel==='email'?'Email':'Phone'}VerificationCode`,'Identity',
+      `Send a ${channel} verification code`,`Uses the saved registration ${channel} through the configured verification provider. Enforces a 60-second resend cooldown and rolling account, destination and IP limits. A timeout is recorded as delivery_uncertain because it does not prove provider rejection.`,
+      Type.Ref(ContactVerificationSchema),{command:true,status:202,body:object({})})},run([],async({sql,actor,request})=>{
+        contactUnavailable(); const result=await sendContactCode(sql,contactDependencies!,{accountId:actor.id,channel,ip:request.ip,requestId:request.id});
+        if(!result.ok)return {status:503,body:{code:'CONTACT_PROVIDER_UNAVAILABLE',message:'Verification delivery is uncertain. Wait before retrying with a new idempotency key.',request_id:request.id}};
+        return {status:202,body:result.verification};
+      }));
+    app.post(`/v1/auth/${channel}/verify-code`,{schema:contract(`verify${channel==='email'?'Email':'Phone'}Code`,'Identity',
+      `Verify a ${channel} code`,`Checks the code through the provider without storing or logging it. Five local attempts are allowed per verification, with rolling account, destination and IP abuse limits.`,
+      Type.Ref(ContactVerificationSchema),{command:true,body:object({code:Type.String({pattern:'^[0-9]{4,10}$'})})})},run([],async({sql,actor,request})=>{
+        contactUnavailable(); const result=await checkContactCode(sql,contactDependencies!,{accountId:actor.id,channel,
+          code:(request.body as {code:string}).code,ip:request.ip,requestId:request.id});
+        if(!result.ok)return {status:503,body:{code:'CONTACT_PROVIDER_UNAVAILABLE',message:'Verification result is uncertain. Retry with the same idempotency key.',request_id:request.id}};
+        return {status:200,body:result.verification};
+      }));
+  }
   app.get('/v1/me/capabilities', { schema: contract('getCurrentCapabilities','Identity','Get current action capabilities',
     'Returns normalized server-owned decisions and unmet requirements. Production money and trading commands must call this policy before activation; current financial commands remain isolated synthetic operations. Actions fail closed until provider, jurisdiction, risk and production gates are approved.', Type.Ref(CapabilitiesSchema)) }, async req => {
     const {a}=await authenticated(req); return evaluateCapabilities(await accountAssurance(db,a));
