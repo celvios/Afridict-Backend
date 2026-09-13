@@ -38,6 +38,11 @@ import {approveCryptoWithdrawal,createCryptoWithdrawal,listCryptoReviews,listCry
   recordCryptoSubmission,type TokenAssetRow} from './funding/crypto.js';
 import {BookSchema,FillSchema,MarketEventSchema,OrderSchema,PositionSchema,TradingStateSchema,tradingSchemas} from './trading/contracts.js';
 import {activateClob,cancelOrder,haltClob,listFills,listOrders,listPositions,marketEvents,orderBook,submitOrder} from './trading/service.js';
+import {ResolutionBallotSchema,ResolutionCaseSchema,ResolutionCloseSchema,ResolutionEvidenceSchema,
+  ResolutionResultSchema,RedemptionBatchSchema,RedemptionSchema,resolutionSchemas} from './resolution/contracts.js';
+import {archiveEvidence,ballotResolution,challengeResolution,closeResolutionBook,finalizeResolution,
+  getResolution,listMyRedemptions,listResolutionEvidence,proposeResolution,redeemBatch} from './resolution/service.js';
+import type {ResolutionResult} from './resolution/model.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -56,7 +61,8 @@ function contract(id: string, tag: string, summary: string, description: string,
 }
 
 export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier,
-  contactDependencies?:ContactDependencies,personaDependencies?:PersonaDependencies,fiatDependencies?:FiatDependencies) {
+  contactDependencies?:ContactDependencies,personaDependencies?:PersonaDependencies,fiatDependencies?:FiatDependencies,
+  resolutionClock:()=>Date=()=>new Date()) {
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
   if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
@@ -70,13 +76,13 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute', global: true,
     errorResponseBuilder: req => ({ code: 'RATE_LIMITED', message: 'Request limit exceeded. Retry after the indicated delay.', request_id: req.id }) });
   await app.register(swagger, { openapi: { openapi: '3.1.1',
-    info: { title: 'Afridict Backend API', version: '0.4.0', description: 'Identity, governance and financial workflow API. Financial commands execute only in the isolated synthetic demo; no real payment partner, chain indexer, custody activation, trading or resolution is available. Production access requires approved adapters and governance.' },
+    info: { title: 'Afridict Backend API', version: '0.4.0', description: 'Financial and prediction-market infrastructure API. Collateralized matching, governed resolution and redemption operate only in the isolated synthetic demo. Real-money trading, chain settlement and production outcome finality remain disabled pending approved adapters and governance.' },
     servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development only; not a production address' }],
-    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic','Trading'].map(name => ({ name, description: `${name} operations` })),
+    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic','Trading','Resolution'].map(name => ({ name, description: `${name} operations` })),
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
       description: 'OIDC access token verified against configured issuer, audience and JWKS. Roles come from server-owned account records. Demo mode accepts only synthetic demo.<persona> selectors; those never work in production.' } } },
   }, refResolver: { buildLocalReference: json => String(json.$id) } });
-  for (const schema of [...schemas,...financialSchemas,...tradingSchemas]) app.addSchema(schema);
+  for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
   app.addHook('preParsing',async(request,_reply,payload)=>{
@@ -577,7 +583,7 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     const p=req.params as {id:string;outcome:string};return db.transaction(sql=>orderBook(sql,p.id,p.outcome));
   });
   app.get('/v1/markets/:id/trading/events',{schema:contract('listSyntheticMarketEvents','Trading',
-    'Resume sequenced market events','Append-only event cursor for order admission, fills, cancellation and halts. The feed never includes another customer\'s identity. Continue with next_sequence while has_more is true; refetch the book if your client lost its cursor.',
+    'Resume sequenced market events','Append-only cursor for orders, fills, cancellation, halts, resolution and redemption batches. The feed excludes customer identities. Continue with next_sequence while has_more is true; refetch the book if your client lost its cursor.',
     object({market_id:UUID,items:Type.Array(Type.Ref(MarketEventSchema)),next_sequence:Uint,has_more:Type.Boolean()}),
     {params:IdParams,public:true,querystring:object({after:Type.Optional(Uint)})})},
     async req=>marketEvents(db,id(req),(req.query as {after?:string}).after??'0'));
@@ -602,7 +608,7 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     const {a}=await authenticated(req);return listFills(db,a.id,id(req));
   });
   app.get('/v1/markets/:id/positions',{schema:contract('listMySyntheticPositions','Trading',
-    'Read your unsettled outcome positions','Derived from immutable fills. Buy positions claim the selected outcome; sell positions claim its complement. Positions remain locked in market escrow until a future governed resolution and redemption workflow.',
+    'Read your unsettled outcome positions','Derived from immutable unredeemed fills. Buy positions claim the selected outcome; sell positions claim its complement. Settled fills leave this view and appear in your redemption history.',
     object({items:Type.Array(Type.Ref(PositionSchema))}),{params:IdParams})},async req=>{
     const {a}=await authenticated(req);return listPositions(db,a.id,id(req));
   });
@@ -614,6 +620,75 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
       const order=await cancelOrder(sql,actor,params.id,params.orderId,request.id);
       return {status:200,body:order};
     }));
+  app.post('/v1/admin/markets/:id/resolution/close-book',{schema:contract('closeResolutionBook','Resolution',
+    'Close unmatched orders after cutoff','Synthetic only. Halts trading and releases up to 100 unmatched order reservations per call. Repeat with a new idempotency key until remaining is zero; matching is fenced by the market lock.',
+    Type.Ref(ResolutionCloseSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({})})},
+    run(['market_approver'],async({sql,actor,request})=>{syntheticTrading();return {status:200,
+      body:await closeResolutionBook(sql,actor,id(request),resolutionClock(),request.id)};}));
+  app.post('/v1/admin/markets/:id/resolution/evidence',{schema:contract('archiveResolutionEvidence','Resolution',
+    'Record archived source evidence','Synthetic only. The source must be in the immutable published hierarchy and remain approved. Store only an opaque external archive reference and supplied SHA-256 digest; Afridict does not fetch or verify artifact bytes.',
+    Type.Ref(ResolutionEvidenceSchema),{params:IdParams,command:true,status:201,roles:['resolution_proposer'],
+      body:object({source_name:Type.String({minLength:1,maxLength:150}),
+        source_uri:Type.String({format:'uri',pattern:'^https://',maxLength:2048}),
+        artifact_ref:Type.String({pattern:'^archive:[A-Za-z0-9._/-]{1,190}$',maxLength:198}),
+        document_sha256:Type.String({pattern:'^[a-f0-9]{64}$'}),
+        observed_at:Timestamp})})},run(['resolution_proposer'],async({sql,actor,request})=>{
+      syntheticTrading();return {status:201,body:await archiveEvidence(sql,actor,id(request),request.body as {
+        source_name:string;source_uri:string;artifact_ref:string;document_sha256:string;observed_at:string},
+        resolutionClock(),request.id)};
+    }));
+  app.get('/v1/markets/:id/resolution/evidence',{schema:contract('listResolutionEvidence','Resolution',
+    'List archived evidence references','Returns up to 100 immutable evidence references without raw source documents or customer data.',
+    object({items:Type.Array(Type.Ref(ResolutionEvidenceSchema))}),{params:IdParams,public:true})},
+    async req=>listResolutionEvidence(db,id(req)));
+  app.post('/v1/admin/markets/:id/resolution/proposal',{schema:contract('proposeMarketResolution','Resolution',
+    'Propose a bonded market result','Requires an independent resolution proposer, a closed book with no unmatched orders, the published event time, cited archived evidence and an approved synthetic bond/payout policy. The bond is reserved from finalized collateral.',
+    Type.Ref(ResolutionCaseSchema),{params:IdParams,command:true,status:201,roles:['resolution_proposer'],
+      body:object({result:Type.Ref(ResolutionResultSchema),evidence_id:UUID,reason:Reason})})},
+    run(['resolution_proposer'],async({sql,actor,request})=>{
+      syntheticTrading();const b=request.body as {result:ResolutionResult;evidence_id:string;reason:string};
+      return {status:201,body:await proposeResolution(sql,actor,id(request),b.result,b.evidence_id,b.reason,
+        resolutionClock(),request.id)};
+    }));
+  app.post('/v1/admin/markets/:id/resolution/challenge',{schema:contract('challengeMarketResolution','Resolution',
+    'Challenge a proposed result','A different bonded proposer can submit a competing result or evidence before the published challenge deadline. One challenge is accepted per case.',
+    Type.Ref(ResolutionCaseSchema),{params:IdParams,command:true,roles:['resolution_proposer'],
+      body:object({result:Type.Ref(ResolutionResultSchema),evidence_id:UUID,reason:Reason})})},
+    run(['resolution_proposer'],async({sql,actor,request})=>{
+      syntheticTrading();const b=request.body as {result:ResolutionResult;evidence_id:string;reason:string};
+      return {status:200,body:await challengeResolution(sql,actor,id(request),b.result,b.evidence_id,b.reason,
+        resolutionClock(),request.id)};
+    }));
+  app.post('/v1/admin/markets/:id/resolution/ballots',{schema:contract('adjudicateMarketResolution','Resolution',
+    'Record an independent adjudicator ballot','One immutable ballot per distinct reviewer citing archived evidence from this market. Proposal and challenge participants and the creator cannot vote. Recusals count toward the published panel size but not the approval threshold.',
+    Type.Ref(ResolutionBallotSchema),{params:IdParams,command:true,status:201,roles:['resolution_reviewer'],
+      body:object({decision:Type.String({enum:['proposal','challenge','recuse']}),reason:Reason,
+        evidence_id:UUID})})},run(['resolution_reviewer'],async({sql,actor,request})=>{
+      syntheticTrading();const b=request.body as {decision:'proposal'|'challenge'|'recuse';reason:string;evidence_id:string};
+      return {status:201,body:await ballotResolution(sql,actor,id(request),b.decision,b.reason,b.evidence_id,
+        resolutionClock(),request.id)};
+    }));
+  app.post('/v1/admin/markets/:id/resolution/finalize',{schema:contract('finalizeMarketResolution','Resolution',
+    'Finalize the adjudicated result','Requires a complete independent panel, one candidate meeting the published quorum, the full challenge window plus timelock, and an independent finalizer. The result and hash become immutable; proposal and challenge bonds are returned. No winner is credited until redemption.',
+    Type.Ref(ResolutionCaseSchema),{params:IdParams,command:true,roles:['resolution_finalizer'],
+      body:object({reason:Reason})})},run(['resolution_finalizer'],async({sql,actor,request})=>{
+      syntheticTrading();return {status:200,body:await finalizeResolution(sql,actor,id(request),
+        (request.body as {reason:string}).reason,resolutionClock(),request.id)};
+    }));
+  app.post('/v1/admin/markets/:id/resolution/redeem-batch',{schema:contract('redeemFinalizedMarketBatch','Resolution',
+    'Settle finalized claims from market escrow','Synthetic only. Settles up to 100 unredeemed fills in one transaction. Every fill has a unique journal effect and immutable redemption record. Repeat with a new idempotency key until remaining is zero. Suspended owners are still credited to their restricted accounts.',
+    Type.Ref(RedemptionBatchSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({})})},
+    run(['finance_operator'],async({sql,actor,request})=>{syntheticTrading();return {status:200,
+      body:await redeemBatch(sql,actor,id(request),request.id)};}));
+  app.get('/v1/markets/:id/resolution',{schema:contract('getMarketResolution','Resolution',
+    'Read proposal, challenge and finalized result','Returns null before a case exists. The final result and hash are immutable; a final result alone does not mean all fills have been redeemed.',
+    Type.Union([Type.Ref(ResolutionCaseSchema),Type.Null()]),{params:IdParams,public:true})},
+    async req=>getResolution(db,id(req)));
+  app.get('/v1/markets/:id/redemptions',{schema:contract('listMyMarketRedemptions','Resolution',
+    'Read your settled claims','Returns your latest 100 settled fills and the exact amount credited from market escrow. Zero payouts remain visible as a settled record.',
+    object({items:Type.Array(Type.Ref(RedemptionSchema))}),{params:IdParams})},async req=>{
+      const {a}=await authenticated(req);return listMyRedemptions(db,id(req),a.id);
+    });
   app.get('/v1/market-templates', { schema: contract('listMarketTemplates','Markets','List approved market templates','Returns only approved registry entries. Production starts with no approved templates; the demo seeds explicitly synthetic templates. Template approval is an operational governance decision.', object({ items: Type.Array(object({ id: Type.String(), version: Type.Integer(), market_type: Type.String({ enum: ['binary','categorical','scalar'] }) })) }), { public: true }) }, async () => ({ items: (await db.query('SELECT id,version,market_type FROM market_templates WHERE approved=true ORDER BY id,version')).rows }));
   app.get('/v1/admin/evidence-sources', { schema: contract('listApprovedEvidenceSources','Governance','List approved evidence sources','Market creators and reviewers select primary and fallback sources from this registry. The URLs are references only and are not fetched by this API.', object({ items: Type.Array(object({ name: Type.String(), uri: Type.String() })) }),
     { roles: ['market_creator','market_approver','legal_reviewer','integrity_reviewer','resolution_reviewer','auditor'] }) }, async req => {

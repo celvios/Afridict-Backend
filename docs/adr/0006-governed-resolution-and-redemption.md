@@ -1,0 +1,19 @@
+# ADR 0006: Governed synthetic resolution and redemption
+
+Status: accepted for the isolated synthetic environment. Production outcome finality and chain settlement remain blocked.
+
+## Context
+
+The CLOB moves exactly one fixed payout unit per matched share into market escrow. An outcome decision must determine who receives that collateral without changing the immutable fills or allowing one operator to choose a winner and pay themselves. Published terms already contain a source hierarchy, challenge window, timelock, panel size, adjudication threshold, bond reference and payout reference.
+
+## Decision
+
+After the published trading cutoff, a market approver closes the book and releases unmatched reservations in bounded batches. Once the published event time has arrived, an independent resolution proposer cites an archived evidence record and reserves the bond amount defined by an explicitly approved synthetic policy binding. Another proposer may submit one competing result or evidence record before the challenge deadline, with a separate reserved bond. The panel may vote on a challenged case immediately; an unchallenged case waits until its challenge window closes. Each distinct resolution reviewer records one immutable ballot citing evidence from the same market, or records a recusal. The full published panel must be accounted for, and exactly one candidate must reach the published strict-majority threshold. A separate finalizer may commit that result only after the challenge window and timelock, and before the resolution deadline.
+
+An evidence row records the immutable published source identity, an opaque external archive reference, a caller-supplied artifact SHA-256 digest and a server-calculated hash of that record. Afridict does not fetch source documents or verify bytes behind an archive reference in this release. This is a provenance record, not independent proof of source authenticity. Raw evidence and customer data stay outside the public API. The published source and policy registries must still approve the references when they are used.
+
+The finalized result and its hash cannot change. Valid binary and categorical results give each matched share's full fixed payout to the selected-outcome buyer or the complementary seller. Scalar results use the published bounds and exact integer arithmetic; the buyer's fraction is rounded down and the seller receives the remainder, conserving the full share payout. An invalid or cancelled result returns each side's **recorded matched collateral**. Execution fees remain in the protocol-fee bucket. This invalid/cancelled rule is required by the approved synthetic payout binding and is never inferred from an unapproved production policy.
+
+Redemption processes up to 100 unredeemed fills per command. One balanced, uniquely identified journal moves the full collateral for each fill from market escrow to the two user-available accounts. A unique, append-only redemption row identifies the fill and journal. The market case lock serializes workers for that market, and an asset-level advisory lock serializes debits from pooled market escrow across markets. Retry with the same idempotency key returns the previous batch; a new key continues from remaining fills. Suspended owners still receive ledger credit but cannot use their restricted account. Position reads exclude redeemed fills, and each account can read its credited redemption records.
+
+Proposal and challenge bonds are returned after final adjudication. No slashing rule or arbitrary penalty is invented. A future policy can add slashing only after explicit legal, governance and financial approval. All resolution commands are restricted to synthetic finance and demo authentication outside production; real market finality still requires authenticated evidence archives, provider adapters, independently reviewed payout policy, Robinhood Chain settlement/finality and reconciliation.

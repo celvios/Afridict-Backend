@@ -4,7 +4,7 @@ import { requireCondition } from '../platform/errors.js';
 import { integer } from './model.js';
 import { accountBalance, ledgerAccount, lockOwnerAsset, postJournal } from './ledger.js';
 
-export type ReservationPurpose = 'clob' | 'amm' | 'rfq' | 'withdrawal';
+export type ReservationPurpose = 'clob' | 'amm' | 'rfq' | 'withdrawal' | 'resolution_bond';
 interface ReservationRow {
   id: string; owner_id: string; asset_code: string; purpose: ReservationPurpose;
   reference_id: string; amount: string; consumed: string; released: string;
