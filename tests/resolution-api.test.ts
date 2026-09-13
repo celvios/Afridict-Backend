@@ -9,10 +9,22 @@ import { ledgerAccount,accountBalance,postJournal } from '../src/financial/ledge
 import { migrate } from '../src/platform/migrations.js';
 import { postgres,type Database } from '../src/platform/database.js';
 import type { MarketTerms } from '../src/contracts.js';
+import type {SettlementDependencies,SettlementObservation} from '../src/settlement/service.js';
+import type {Address,Hex} from 'viem';
 
 let db:Database,app:FastifyInstance,schema:string|undefined;
 let identities:Record<string,string>,clockNow=new Date(),key=0;
 let resolutionMarket:{id:string;policy:MarketTerms},resolutionEvidenceId:string;
+const settlementContract='0x1111111111111111111111111111111111111111' as Address;
+const settlementCodeHash=`0x${'2'.repeat(64)}` as Hex;
+let settlementObservation:SettlementObservation|null=null,settlementAttempt=0;
+let settlementSignerUncertain=false,settlementRecovered:{transactionHash:Hex;nonce:bigint}|null=null;
+const settlementDependencies:SettlementDependencies={
+  submitter:{async submit(){settlementAttempt+=1;if(settlementSignerUncertain)return {state:'uncertain' as const};
+    return {state:'submitted' as const,transactionHash:`0x${settlementAttempt.toString(16).padStart(64,'0')}` as Hex,
+      nonce:BigInt(settlementAttempt)};},async lookup(){return settlementRecovered;}},
+  observers:['rpc-primary','rpc-independent'].map(id=>({id,async observe(){return settlementObservation;}})),
+};
 const headers=(who:string)=>({authorization:`Bearer demo.${who}`});
 const post=(who:string,url:string,payload:unknown,once?:string)=>app.inject({method:'POST',url,
   headers:{...headers(who),'idempotency-key':once??`resolution-key-${++key}`},
@@ -81,6 +93,10 @@ beforeAll(async()=>{
   await db.query(`INSERT INTO resolution_policy_bindings
     (bond_policy_ref,payout_policy_ref,asset_code,bond_minor,invalid_payout,approved,evidence_ref)
     VALUES ('demo:bond-v1','demo:payout-v1','DEMO',1000,'refund_recorded_collateral',true,'synthetic-demo-only')`);
+  await db.query(`INSERT INTO chain_settlement_bindings(asset_code,chain_id,contract_address,
+    collateral_token_address,contract_code_hash,finality_policy_ref,confirmations,observer_quorum,approved,evidence_ref)
+    VALUES ('DEMO',46630,$1,$2,$3,'demo:finality-v1',3,2,true,'synthetic-testnet-only')`,
+    [settlementContract,'0x2222222222222222222222222222222222222222',settlementCodeHash]);
   for(const who of ['trader','proposer','resolution_proposer','resolution_challenger']){
     const escrow=await ledgerAccount(db,null,'DEMO','escrow_asset');
     const available=await ledgerAccount(db,identities[who]!,'DEMO','user_available');
@@ -89,7 +105,7 @@ beforeAll(async()=>{
         {account:escrow,debit:10_000_000n,credit:0n},{account:available,debit:0n,credit:10_000_000n},
       ]}));
   }
-  app=await buildApp(db,demoConfig,demoAuth,undefined,undefined,undefined,undefined,()=>clockNow);
+  app=await buildApp(db,demoConfig,demoAuth,undefined,undefined,undefined,undefined,()=>clockNow,settlementDependencies);
 });
 afterAll(async()=>{
   if(app)await app.close();if(db)await db.close();
@@ -241,5 +257,65 @@ describe('governed synthetic resolution and exactly-once redemption',()=>{
     expect(settled.json()).toMatchObject({fill_count:1,paid_minor:'1000000',remaining:'0'});
     expect(await balance('trader','user_available')).toBe(buyerBefore-6_000n);
     expect(await balance('proposer','user_available')).toBe(sellerBefore-4_000n);
+  });
+
+  it('prepares one deterministic chain claim, verifies quorum and detects later divergence',async()=>{
+    const market=resolutionMarket;
+    const [one,two]=await Promise.all([
+      post('finance',`/v1/admin/markets/${market.id}/settlement-batches`,{},'settlement-prepare-one'),
+      post('finance',`/v1/admin/markets/${market.id}/settlement-batches`,{},'settlement-prepare-two'),
+    ]);
+    expect([one.statusCode,two.statusCode],[one.body,two.body].join('\n')).toContain(201);
+    const prepared=[one,two].find(result=>result.statusCode===201)!;
+    const rejected=[one,two].find(result=>result.statusCode!==201)!;
+    expect(prepared.json()).toMatchObject({market_id:market.id,chain_id:'46630',contract_address:settlementContract,
+      state:'prepared',item_count:1,total_minor:'2000000',submission:null});
+    expect(rejected.json().code).toBe('NO_SETTLEMENT_PAYOUTS');
+    const batchId=prepared.json().id as string;
+    await expect(db.query(`UPDATE settlement_batches SET manifest_hash=$2 WHERE id=$1`,[batchId,'f'.repeat(64)]))
+      .rejects.toThrow();
+    await expect(db.query(`UPDATE chain_settlement_bindings SET confirmations=1 WHERE asset_code='DEMO'`))
+      .rejects.toThrow();
+    const row=(await db.query<{calldata_hash:Hex}>(`SELECT calldata_hash FROM settlement_batches WHERE id=$1`,[batchId])).rows[0]!;
+    const submitted=await post('finance',`/v1/admin/settlement-batches/${batchId}/submit`,{});
+    expect(submitted.statusCode,submitted.body).toBe(202);
+    expect(submitted.json()).toMatchObject({state:'submitted',submission:{state:'submitted',attempt:1}});
+    settlementObservation={transactionHash:submitted.json().submission.transaction_hash,blockNumber:10n,
+      blockHash:`0x${'3'.repeat(64)}`,headNumber:11n,contractAddress:settlementContract,
+      calldataHash:row.calldata_hash,receiptSuccess:true,contractCodeHash:settlementCodeHash};
+    const confirmed=await post('finance',`/v1/admin/settlement-batches/${batchId}/refresh`,{});
+    expect(confirmed.statusCode,confirmed.body).toBe(200);
+    expect(confirmed.json()).toMatchObject({observer_count:2,confirmations:'2',required_confirmations:'3',
+      batch:{state:'confirmed',submission:{state:'confirmed'}}});
+    settlementObservation={...settlementObservation,headNumber:12n};
+    const finalized=await post('finance',`/v1/admin/settlement-batches/${batchId}/refresh`,{});
+    expect(finalized.json()).toMatchObject({observer_count:2,confirmations:'3',batch:{state:'finalized',
+      submission:{state:'finalized'}}});
+    const claims=await get('trader',`/v1/markets/${market.id}/settlement-claims`);
+    expect(claims.json().items[0]).toMatchObject({batch_id:batchId,amount_minor:'2000000',claim_ready:true});
+    expect(claims.json().items[0].proof).toEqual([]);
+    expect((await get('proposer',`/v1/markets/${market.id}/settlement-claims`)).json().items).toEqual([]);
+    settlementDependencies.observers[1]={id:'rpc-independent',async observe(){return settlementObservation?{
+      ...settlementObservation,blockHash:`0x${'4'.repeat(64)}`}:null;}};
+    const divergent=await post('finance',`/v1/admin/settlement-batches/${batchId}/refresh`,{});
+    expect(divergent.json().batch).toMatchObject({state:'exception',submission:{state:'reorged'}});
+    expect((await get('trader',`/v1/markets/${market.id}/settlement-claims`)).json().items[0].claim_ready).toBe(false);
+    settlementSignerUncertain=true;
+    const replacement=await post('finance',`/v1/admin/settlement-batches/${batchId}/submit`,{});
+    expect(replacement.json()).toMatchObject({state:'submitted',submission:{state:'uncertain',attempt:2,
+      transaction_hash:null}});
+    expect((await post('finance',`/v1/admin/settlement-batches/${batchId}/submit`,{})).json().code)
+      .toBe('SETTLEMENT_ALREADY_SUBMITTED');
+    settlementRecovered={transactionHash:`0x${'5'.repeat(64)}`,nonce:2n};
+    settlementObservation={...settlementObservation,transactionHash:settlementRecovered.transactionHash,
+      blockHash:`0x${'6'.repeat(64)}`,headNumber:12n};
+    settlementDependencies.observers[1]={id:'rpc-independent',async observe(){return settlementObservation;}};
+    const recovered=await post('finance',`/v1/admin/settlement-batches/${batchId}/refresh`,{});
+    expect(recovered.json().batch).toMatchObject({state:'finalized',submission:{state:'finalized',attempt:2,
+      transaction_hash:settlementRecovered.transactionHash}});
+    settlementObservation={...settlementObservation,headNumber:11n};
+    const regressed=await post('finance',`/v1/admin/settlement-batches/${batchId}/refresh`,{});
+    expect(regressed.json().batch).toMatchObject({state:'exception',submission:{state:'reorged',attempt:2}});
+    expect((await get('trader',`/v1/markets/${market.id}/settlement-claims`)).json().items[0].claim_ready).toBe(false);
   });
 });
