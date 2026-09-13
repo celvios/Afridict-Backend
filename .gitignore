@@ -1,6 +1,3 @@
-# Markdown remains local under the repository owner's publishing policy.
-*.[mM][dD]
-
 # Dependencies and generated artifacts
 node_modules/
 dist/
