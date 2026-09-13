@@ -43,6 +43,11 @@ export const ContactVerificationSchema=object({id:UUID,channel:Type.String({enum
   state:Type.String({enum:['pending','delivery_uncertain','approved','expired','failed']}),
   attempts_remaining:Type.Integer({minimum:0,maximum:5}),expires_at:Timestamp,resend_available_at:Timestamp,
 },{$id:'ContactVerification',description:'Normalized contact possession workflow. OTP values and provider credentials are never persisted or returned.'});
+const IdentityStateSchema=Type.String({enum:['NOT_STARTED','PENDING','IN_REVIEW','VERIFIED','FAILED','REQUIRES_RETRY']});
+export const IdentityStatusSchema=object({state:IdentityStateSchema,inquiry_id:Type.Union([UUID,Type.Null()]),updated_at:Timestamp},
+  {$id:'IdentityStatus',description:'Afridict-normalized identity state. Persona remains the external identity-document authority; raw documents are never returned.'});
+export const IdentitySessionSchema=object({inquiry_id:UUID,state:Type.Literal('PENDING'),client_token:text('Short-lived Persona client token for the authenticated account only.',4096),
+  expires_at:Type.Union([Timestamp,Type.Null()])},{$id:'IdentitySession'});
 export const EvidenceSource = object({ name: text('Published source name.', 150),
   uri: Type.String({ format: 'uri', pattern: '^https://', maxLength: 2048, description: 'Evidence-source reference. This API never fetches supplied URLs.' }) });
 const scalar = object({ lower: signed, upper: signed, decimals: Type.Integer({ minimum: 0, maximum: 18 }),
@@ -111,5 +116,6 @@ export const IdParams = object({ id: UUID });
 export const IdempotencyHeaders = Type.Object({ 'idempotency-key': Type.String({ minLength: 8, maxLength: 128,
   pattern: '^[A-Za-z0-9_-]+$', description: 'Unique per actor across all commands. Committed responses are retained indefinitely in this release. Same method, route, resource and canonical JSON body returns the original result; different content returns 409. Concurrent retries wait for the transaction or return 503; retry with the same key. Failed transactions may be retried. Authentication and authorization are rechecked on every retry.' }) }, { additionalProperties: true });
 export const schemas = [ErrorSchema, AccountSchema, EligibilitySchema, CapabilitiesSchema, AuthenticationConfigurationSchema,
-  RegistrationProfileSchema,ContactVerificationSchema,Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
+  RegistrationProfileSchema,ContactVerificationSchema,IdentityStatusSchema,IdentitySessionSchema,
+  Terms, MarketSchema, ProposalSchema, ReviewSchema, EligibilityReviewSchema];
 export { object, text };

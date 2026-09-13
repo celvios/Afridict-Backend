@@ -6,6 +6,7 @@ import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
 import { Type, type Static, type TSchema } from '@sinclair/typebox';
 import { createHash, randomUUID } from 'node:crypto';
+import { Transform } from 'node:stream';
 import type { Config } from './platform/config.js';
 import type { Database, Sql } from './platform/database.js';
 import { AppError, requireCondition } from './platform/errors.js';
@@ -14,7 +15,8 @@ import { findAccount, hasRole, oidcAuthenticator, publicAccount, type Account, t
 import { schemas, AccountSchema, EligibilitySchema, ErrorSchema, IdParams, IdempotencyHeaders,
   Terms, MarketSchema, ProposalSchema, ReviewSchema, ReviewCommand, VersionCommand, ListQuery,
   Reason, EvidenceRef, EligibilityReviewSchema, CapabilitiesSchema, AuthenticationConfigurationSchema,
-  RegistrationProfileSchema,ContactVerificationSchema,Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
+  RegistrationProfileSchema,ContactVerificationSchema,IdentityStatusSchema,IdentitySessionSchema,
+  Country, UUID, Timestamp, Uint, object, text, type MarketTerms } from './contracts.js';
 import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket, mayReadDraft, publicMarket, publish, reviewMarket,
   submitDraft, type MarketRow } from './markets/service.js';
 import { validateTerms } from './markets/domain.js';
@@ -28,6 +30,7 @@ import { reconcile } from './financial/reconciliation.js';
 import { accountAssurance, evaluateCapabilities } from './identity/capabilities.js';
 import { registerProfile } from './identity/registration.js';
 import { checkContactCode,sendContactCode,type ContactDependencies } from './identity/contact.js';
+import { applyPersonaEvent,createIdentitySession,verifyPersonaSignature,type PersonaDependencies } from './identity/persona.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -46,7 +49,7 @@ function contract(id: string, tag: string, summary: string, description: string,
 }
 
 export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier,
-  contactDependencies?:ContactDependencies) {
+  contactDependencies?:ContactDependencies,personaDependencies?:PersonaDependencies) {
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
   if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
@@ -69,6 +72,14 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   for (const schema of [...schemas,...financialSchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
+  app.addHook('preParsing',async(request,_reply,payload)=>{
+    if(request.url.split('?')[0]!=='/v1/webhooks/persona')return payload;
+    const chunks:Buffer[]=[];let size=0;
+    const tee=new Transform({transform(chunk,_encoding,done){const value=Buffer.from(chunk);size+=value.length;
+      if(size>32768)return done(new Error('Persona webhook exceeds body limit'));chunks.push(value);done(null,value);},
+    flush(done){(request as Request&{rawBody?:Buffer}).rawBody=Buffer.concat(chunks);done();}});
+    return payload.pipe(tee);
+  });
   app.addHook('onResponse', async (request, reply) => {
     // Never log URL queries, payloads, provider subjects, credentials or evidence.
     request.log.info({ request_id: request.id, operation: request.routeOptions.schema?.operationId,
@@ -175,6 +186,36 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
         return {status:200,body:result.verification};
       }));
   }
+  app.get('/v1/kyc/status',{schema:contract('getIdentityVerificationStatus','Identity','Get normalized identity status',
+    'Returns Afridict state only. It never exposes Persona payloads, document data, or internal evidence.',Type.Ref(IdentityStatusSchema))},async req=>{
+    const {a}=await authenticated(req);const row=(await db.query<{identity_status:string;identity_updated_at:Date}>(
+      'SELECT identity_status,identity_updated_at FROM account_assurance WHERE account_id=$1',[a.id])).rows[0];
+    const inquiry=(await db.query<{id:string}>('SELECT id FROM identity_inquiries WHERE account_id=$1 ORDER BY created_at DESC LIMIT 1',[a.id])).rows[0];
+    return {state:row?.identity_status??'NOT_STARTED',inquiry_id:inquiry?.id??null,updated_at:new Date(row?.identity_updated_at??a.created_at).toISOString()};
+  });
+  app.post('/v1/kyc/session',{schema:contract('createIdentityVerificationSession','Identity','Create a Persona identity session',
+    'Requires verified email and phone. The provider call uses the command idempotency key. The returned client token belongs only to this authenticated account and must not be logged.',
+    Type.Ref(IdentitySessionSchema),{command:true,status:201,body:object({})})},run([],async({sql,actor,request})=>{
+      requireCondition(personaDependencies,503,'IDENTITY_PROVIDER_UNAVAILABLE','Identity verification is not configured.');
+      return {status:201,body:await createIdentitySession(sql,personaDependencies.provider,{accountId:actor.id,
+        idempotencyKey:String(request.headers['idempotency-key']),requestId:request.id})};
+    }));
+  const PersonaEventSchema=object({data:object({id:Type.String({minLength:1,maxLength:200}),type:Type.Literal('event'),attributes:object({
+    name:Type.String({enum:['inquiry.created','inquiry.started','inquiry.completed','inquiry.failed','inquiry.expired','inquiry.approved','inquiry.marked-for-review','inquiry.declined']}),
+    'created-at':Timestamp,payload:object({data:object({id:Type.String({minLength:1,maxLength:200}),type:Type.Literal('inquiry'),
+      attributes:object({status:Type.String({enum:['created','pending','completed','failed','expired','approved','needs_review','needs review','declined']}),'reference-id':UUID})})})})})});
+  app.post('/v1/webhooks/persona',{schema:contract('receivePersonaIdentityEvent','Identity','Receive an authenticated Persona event',
+    'Verifies Persona-Signature against the exact raw request body, deduplicates event IDs, rejects conflicting replay, and applies only events newer than the inquiry current provider timestamp.',
+    object({accepted:Type.Literal(true),applied:Type.Boolean()}),{public:true,status:202,headers:Type.Object({'persona-signature':Type.String({minLength:10,maxLength:512})},{additionalProperties:true}),body:PersonaEventSchema})},async(request,reply)=>{
+      requireCondition(personaDependencies,503,'IDENTITY_PROVIDER_UNAVAILABLE','Identity verification is not configured.');
+      const raw=(request as Request&{rawBody?:Buffer}).rawBody,signature=String(request.headers['persona-signature']??'');
+      requireCondition(raw&&verifyPersonaSignature(raw,signature,personaDependencies.webhookSecrets),401,'INVALID_PERSONA_SIGNATURE','A valid Persona webhook signature is required.');
+      const body=request.body as {data:{id:string;attributes:{name:string;'created-at':string;payload:{data:{id:string;attributes:{status:string;'reference-id':string}}}}}};
+      const result=await db.transaction(sql=>applyPersonaEvent(sql,{eventId:body.data.id,name:body.data.attributes.name,
+        occurredAt:body.data.attributes['created-at'],providerReference:body.data.attributes.payload.data.id,
+        accountReference:body.data.attributes.payload.data.attributes['reference-id'],status:body.data.attributes.payload.data.attributes.status},raw,request.id));
+      return reply.code(202).send(result);
+    });
   app.get('/v1/me/capabilities', { schema: contract('getCurrentCapabilities','Identity','Get current action capabilities',
     'Returns normalized server-owned decisions and unmet requirements. Production money and trading commands must call this policy before activation; current financial commands remain isolated synthetic operations. Actions fail closed until provider, jurisdiction, risk and production gates are approved.', Type.Ref(CapabilitiesSchema)) }, async req => {
     const {a}=await authenticated(req); return evaluateCapabilities(await accountAssurance(db,a));
