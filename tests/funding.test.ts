@@ -27,7 +27,10 @@ afterAll(async()=>{await app.close();await db.close();});
 describe('financial ledger, funding and reconciliation',()=>{
   it('does not expose a partner-confirmed deposit as spendable collateral',async()=>{
     const assets=await get('trader','/v1/financial-assets');
-    expect(assets.json()).toEqual({items:[{code:'DEMO',scale:6,synthetic:true,funding_enabled:true,withdrawal_enabled:true}]});
+    expect(assets.json()).toEqual({items:[
+      {code:'DEMO',scale:6,synthetic:true,funding_enabled:true,withdrawal_enabled:true},
+      {code:'NGN',scale:2,synthetic:true,funding_enabled:true,withdrawal_enabled:true},
+    ]});
     expect((await get('trader','/v1/smart-account')).json()).toMatchObject({chain_id:'46630',status:'active',recovery:'identity_provider',financial_mode:'synthetic'});
     const intent=await post('trader','/v1/deposit-intents',{asset:'DEMO',target_minor:'100',rail:'synthetic'});
     expect(intent.statusCode,intent.body).toBe(201); expect(intent.json().funding_instructions_available).toBe(false);
@@ -41,6 +44,13 @@ describe('financial ledger, funding and reconciliation',()=>{
     expect(finalized.statusCode,finalized.body).toBe(200); expect(finalized.json().state).toBe('reconciled_available');
     expect((await get('trader','/v1/balances')).json().items[0]).toMatchObject({asset:'DEMO',available_minor:'100',reserved_minor:'0'});
     expect((await get('trader','/v1/statements')).json().items[0]).toMatchObject({kind:'deposit_finalized',direction:'increase',amount_minor:'100'});
+  });
+
+  it('projects the NGN wallet without inventing a generic USD crypto balance',async()=>{
+    const wallets=await get('trader','/v1/wallets');expect(wallets.statusCode,wallets.body).toBe(200);
+    expect(wallets.json().items).toEqual([
+      {currency:'NGN',scale:2,available_minor:'0',reserved_minor:'0',withdrawal_pending_minor:'0',funding_enabled:false,withdrawal_enabled:false},
+    ]);
   });
 
   it('serializes concurrent withdrawal reservations against one balance',async()=>{
