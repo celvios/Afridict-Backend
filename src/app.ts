@@ -43,6 +43,9 @@ import {ResolutionBallotSchema,ResolutionCaseSchema,ResolutionCloseSchema,Resolu
 import {archiveEvidence,ballotResolution,challengeResolution,closeResolutionBook,finalizeResolution,
   getResolution,listMyRedemptions,listResolutionEvidence,proposeResolution,redeemBatch} from './resolution/service.js';
 import type {ResolutionResult} from './resolution/model.js';
+import {SettlementBatchSchema,SettlementClaimSchema,SettlementRefreshSchema,settlementSchemas} from './settlement/contracts.js';
+import {getSettlementBatch,listMySettlementClaims,prepareSettlementBatch,refreshSettlementBatch,
+  submitSettlementBatch,type SettlementDependencies} from './settlement/service.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -62,7 +65,7 @@ function contract(id: string, tag: string, summary: string, description: string,
 
 export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier,
   contactDependencies?:ContactDependencies,personaDependencies?:PersonaDependencies,fiatDependencies?:FiatDependencies,
-  resolutionClock:()=>Date=()=>new Date()) {
+  resolutionClock:()=>Date=()=>new Date(),settlementDependencies?:SettlementDependencies) {
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
   if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
@@ -76,13 +79,13 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute', global: true,
     errorResponseBuilder: req => ({ code: 'RATE_LIMITED', message: 'Request limit exceeded. Retry after the indicated delay.', request_id: req.id }) });
   await app.register(swagger, { openapi: { openapi: '3.1.1',
-    info: { title: 'Afridict Backend API', version: '0.4.0', description: 'Financial and prediction-market infrastructure API. Collateralized matching, governed resolution and redemption operate only in the isolated synthetic demo. Real-money trading, chain settlement and production outcome finality remain disabled pending approved adapters and governance.' },
+    info: { title: 'Afridict Backend API', version: '0.5.0', description: 'Financial and prediction-market infrastructure API. Collateralized matching, governed resolution, redemption and Robinhood Chain settlement preparation operate only in the isolated synthetic testnet workflow. Real-money trading, mainnet settlement and production outcome finality remain disabled pending approved deployments, adapters and governance.' },
     servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development only; not a production address' }],
-    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic','Trading','Resolution'].map(name => ({ name, description: `${name} operations` })),
+    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic','Trading','Resolution','Settlement'].map(name => ({ name, description: `${name} operations` })),
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
       description: 'OIDC access token verified against configured issuer, audience and JWKS. Roles come from server-owned account records. Demo mode accepts only synthetic demo.<persona> selectors; those never work in production.' } } },
   }, refResolver: { buildLocalReference: json => String(json.$id) } });
-  for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas]) app.addSchema(schema);
+  for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas,...settlementSchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
   app.addHook('preParsing',async(request,_reply,payload)=>{
@@ -688,6 +691,33 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     'Read your settled claims','Returns your latest 100 settled fills and the exact amount credited from market escrow. Zero payouts remain visible as a settled record.',
     object({items:Type.Array(Type.Ref(RedemptionSchema))}),{params:IdParams})},async req=>{
       const {a}=await authenticated(req);return listMyRedemptions(db,id(req),a.id);
+    });
+  const settlementAvailable=()=>requireCondition(settlementDependencies,503,'CHAIN_SETTLEMENT_UNAVAILABLE',
+    'Robinhood Chain settlement dependencies are not configured.');
+  app.post('/v1/admin/markets/:id/settlement-batches',{schema:contract('prepareMarketSettlementBatch','Settlement',
+    'Prepare an immutable chain claim batch','Synthetic testnet only. Converts up to 100 unbatched positive redemption payouts into deterministic SHA-256 Merkle claims for active Robinhood Chain smart accounts. The exact commitBatch calldata and manifest hash are persisted before signing.',
+    Type.Ref(SettlementBatchSchema),{params:IdParams,command:true,status:201,roles:['finance_operator'],body:object({})})},
+    run(['finance_operator'],async({sql,actor,request})=>{syntheticTrading();return {status:201,
+      body:await prepareSettlementBatch(sql,actor,id(request),request.id)};}));
+  app.get('/v1/admin/settlement-batches/:id',{schema:contract('getSettlementBatch','Settlement',
+    'Inspect a chain settlement batch','Finance operators and auditors can inspect the public manifest identity, lifecycle and current submission. Claim proofs and unrelated customer identities are excluded.',
+    Type.Ref(SettlementBatchSchema),{params:IdParams,roles:['finance_operator','auditor']})},async req=>{
+      await authenticated(req,['finance_operator','auditor']);return getSettlementBatch(db,id(req));
+    });
+  app.post('/v1/admin/settlement-batches/:id/submit',{schema:contract('submitSettlementBatch','Settlement',
+    'Submit exact settlement calldata','Testnet only. Sends the persisted calldata through the configured idempotent signer. A timeout becomes uncertain; it never means the transaction failed and must be reconciled before any replacement. A replacement is allowed only after the prior attempt is proven reverted or reorged.',
+    Type.Ref(SettlementBatchSchema),{params:IdParams,command:true,status:202,roles:['finance_operator'],body:object({})})},
+    run(['finance_operator'],async({sql,actor,request})=>{syntheticTrading();settlementAvailable();return {status:202,
+      body:await submitSettlementBatch(sql,actor,id(request),request.id,settlementDependencies!)};}));
+  app.post('/v1/admin/settlement-batches/:id/refresh',{schema:contract('refreshSettlementBatch','Settlement',
+    'Verify chain receipt and finality','Testnet only. Independent RPC observers must agree on transaction, block, exact calldata, target contract and approved runtime code hash. Finalized requires the approved confirmation depth; divergence or a reverted receipt opens an exception.',
+    Type.Ref(SettlementRefreshSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({})})},
+    run(['finance_operator'],async({sql,actor,request})=>{syntheticTrading();settlementAvailable();return {status:200,
+      body:await refreshSettlementBatch(sql,actor,id(request),request.id,settlementDependencies!)};}));
+  app.get('/v1/markets/:id/settlement-claims',{schema:contract('listMySettlementClaims','Settlement',
+    'Read your chain claim proofs','Returns only claims owned by the authenticated account. claim_ready becomes true after independent RPC quorum and the approved confirmation depth verify the batch commitment.',
+    object({items:Type.Array(Type.Ref(SettlementClaimSchema))}),{params:IdParams})},async req=>{
+      const {a}=await authenticated(req);return listMySettlementClaims(db,a.id,id(req));
     });
   app.get('/v1/market-templates', { schema: contract('listMarketTemplates','Markets','List approved market templates','Returns only approved registry entries. Production starts with no approved templates; the demo seeds explicitly synthetic templates. Template approval is an operational governance decision.', object({ items: Type.Array(object({ id: Type.String(), version: Type.Integer(), market_type: Type.String({ enum: ['binary','categorical','scalar'] }) })) }), { public: true }) }, async () => ({ items: (await db.query('SELECT id,version,market_type FROM market_templates WHERE approved=true ORDER BY id,version')).rows }));
   app.get('/v1/admin/evidence-sources', { schema: contract('listApprovedEvidenceSources','Governance','List approved evidence sources','Market creators and reviewers select primary and fallback sources from this registry. The URLs are references only and are not fetched by this API.', object({ items: Type.Array(object({ name: Type.String(), uri: Type.String() })) }),
