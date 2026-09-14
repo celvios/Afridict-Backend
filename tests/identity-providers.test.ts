@@ -1,5 +1,5 @@
 import { describe,expect,it,vi } from 'vitest';
-import { normalizeEmail,normalizePhone,TwilioVerifyProvider } from '../src/identity/providers.js';
+import { normalizeEmail,normalizePhone,normalizePersonaState,PersonaIdentityProvider,TwilioVerifyProvider } from '../src/identity/providers.js';
 
 const sid=`VA${'a'.repeat(32)}`;
 const provider=(responses:Array<{ok:boolean;status:number;body:unknown}>)=>{
@@ -31,5 +31,25 @@ describe('contact provider boundary',()=>{
     expect(await adapter.check({channel:'email',destination:'person@example.com',code:'111111'})).toBe('pending');
     expect(await adapter.check({channel:'email',destination:'person@example.com',code:'222222'})).toBe('expired');
     expect(await adapter.check({channel:'email',destination:'person@example.com',code:'bad'})).toBe('failed');
+  });
+});
+
+describe('Persona provider boundary',()=>{
+  it('maps documented inquiry states into Afridict states',()=>{
+    expect(normalizePersonaState('approved')).toBe('VERIFIED');
+    expect(normalizePersonaState('needs review')).toBe('IN_REVIEW');
+    expect(normalizePersonaState('expired')).toBe('REQUIRES_RETRY');
+    expect(()=>normalizePersonaState('unknown')).toThrow('PERSONA_UNKNOWN_STATUS');
+  });
+  it('creates an inquiry with an opaque account reference and provider idempotency',async()=>{
+    const request=vi.fn(async()=>({ok:true,status:201,json:async()=>({data:{id:'inq_test',attributes:{status:'created'}},
+      meta:{'session-token':'session_test'}})} as Response));
+    const adapter=new PersonaIdentityProvider({apiKey:['unit','key'].join(':'),templateId:'itmpl_test',version:'2025-12-08'},request);
+    expect(await adapter.createSession({accountId:'account-id',idempotencyKey:'command-id'})).toEqual({
+      providerReference:'inq_test',clientToken:'session_test',expiresAt:null});
+    const call=request.mock.calls as unknown as Array<[string,RequestInit]>;
+    expect(call[0]![0]).toBe('https://api.withpersona.com/api/v1/inquiries');
+    expect((call[0]![1].headers as Record<string,string>)['idempotency-key']).toBe('command-id');
+    expect(String(call[0]![1].body)).toContain('"reference-id":"account-id"');
   });
 });
