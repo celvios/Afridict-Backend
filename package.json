@@ -28,12 +28,14 @@
     "@fastify/rate-limit": "11.2.0",
     "@fastify/swagger": "9.8.1",
     "@fastify/swagger-ui": "6.1.1",
+    "@sentry/node": "10.74.0",
     "@sinclair/typebox": "0.34.52",
     "dotenv": "17.4.2",
     "fastify": "5.12.4",
     "jose": "6.2.12",
     "libphonenumber-js": "1.12.24",
     "pg": "8.23.0",
+    "pino": "10.3.1",
     "viem": "2.56.5"
   },
   "devDependencies": {

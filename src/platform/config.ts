@@ -6,6 +6,7 @@ export interface Config {
   jwksUrl?: string; corsOrigins: string[]; docs: boolean; logger: boolean;
   financialMode: 'disabled' | 'synthetic';
   authMethods: ('password'|'google')[]; authorizationUrl?: string; oidcClientId?: string;
+  errorTrackingDsn?: string;
 }
 export function config(env = process.env): Config {
   const environment = env.NODE_ENV ?? 'development';
@@ -41,9 +42,12 @@ export function config(env = process.env): Config {
       throw new Error('CORS_ORIGINS must contain exact HTTP origins');
     if (environment === 'production' && parsed.protocol !== 'https:') throw new Error('Production CORS requires HTTPS');
   }
+  if (env.ERROR_TRACKING_DSN && new URL(env.ERROR_TRACKING_DSN).protocol !== 'https:')
+    throw new Error('ERROR_TRACKING_DSN must use HTTPS');
   return { environment: environment as Config['environment'], host, port, authMode: authMode as Config['authMode'],
     databaseUrl: env.DATABASE_URL, issuer: env.OIDC_ISSUER, audience: env.OIDC_AUDIENCE, jwksUrl: env.OIDC_JWKS_URL,
     corsOrigins, docs: env.DOCS_ENABLED === 'true' || (environment !== 'production' && env.DOCS_ENABLED !== 'false'),
     logger: environment !== 'test', financialMode: financialMode as Config['financialMode'],
-    authMethods:authMethods as Config['authMethods'],authorizationUrl:env.OIDC_AUTHORIZATION_URL,oidcClientId:env.OIDC_CLIENT_ID };
+    authMethods:authMethods as Config['authMethods'],authorizationUrl:env.OIDC_AUTHORIZATION_URL,oidcClientId:env.OIDC_CLIENT_ID,
+    errorTrackingDsn:env.ERROR_TRACKING_DSN };
 }

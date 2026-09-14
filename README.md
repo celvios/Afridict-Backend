@@ -25,15 +25,18 @@ npm run dev
 
 OIDC configuration has no default credentials. Twilio Verify is disabled unless every required server-side value is supplied. Keep all secrets in the environment or an approved secret manager.
 
+Structured JSON logging is enabled outside tests. Optional Sentry error reporting is enabled only by an HTTPS `ERROR_TRACKING_DSN`; reports are sanitized and contain no request body, authenticated user, provider payload, or original exception message.
+
 ## Verification
 
 ```bash
 npm run check
+npm run test:coverage
 npm run api:check
 npm audit --omit=dev --audit-level=high
 ```
 
-`npm run check` runs type checking, lint, tests, build, OpenAPI generation, and contract validation. GitHub Actions also runs migrations and integration tests against PostgreSQL.
+`npm run check` runs type checking, lint, tests, build, OpenAPI generation, and contract validation. `npm run test:coverage` enforces the measured statement, branch, function, and line floors. GitHub Actions exposes each gate separately, runs integration tests against PostgreSQL, audits production dependencies, and Dependabot proposes grouped dependency updates.
 
 ## Contracts and architecture
 

@@ -16,6 +16,13 @@ describe('deployment safety', () => {
     expect(() => config({ NODE_ENV: 'production', AUTH_MODE: 'oidc', OIDC_ISSUER: 'https://issuer.example',
       OIDC_AUDIENCE: 'api', OIDC_JWKS_URL: 'https://issuer.example/jwks', CORS_ORIGINS: 'http://localhost:5173' })).toThrow();
   });
+  it('requires encrypted error-tracking transport', () => {
+    const base={NODE_ENV:'development',AUTH_MODE:'oidc',OIDC_ISSUER:'https://issuer.example',
+      OIDC_AUDIENCE:'api',OIDC_JWKS_URL:'https://issuer.example/jwks'};
+    expect(()=>config({...base,ERROR_TRACKING_DSN:'http://public@example.com/1'})).toThrow('must use HTTPS');
+    expect(config({...base,ERROR_TRACKING_DSN:'https://public@example.com/1'}).errorTrackingDsn)
+      .toBe('https://public@example.com/1');
+  });
   it('advertises Google only through configured OIDC authorization',()=>{
     const base={NODE_ENV:'development',AUTH_MODE:'oidc',OIDC_ISSUER:'https://issuer.example',
       OIDC_AUDIENCE:'api',OIDC_JWKS_URL:'https://issuer.example/jwks'};
