@@ -2,6 +2,9 @@ name: Verify backend contracts and integrity
 on:
   push:
   pull_request:
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -28,7 +31,19 @@ jobs:
         with:
           node-version: '22'
           cache: npm
-      - run: npm ci
-      - run: npm run check
-      - run: npm run api:check
-      - run: npm audit --omit=dev --audit-level=high
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Check TypeScript types
+        run: npm run typecheck
+      - name: Enforce lint rules
+        run: npm run lint
+      - name: Run tests and enforce coverage
+        run: npm run test:coverage
+      - name: Build production artifacts
+        run: npm run build
+      - name: Verify generated OpenAPI contract
+        run: npm run api:check
+      - name: Lint OpenAPI contract
+        run: npm run api:lint
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high

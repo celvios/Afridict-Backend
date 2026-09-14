@@ -16,7 +16,10 @@ describe('OIDC access token verification', () => {
       .setProtectedHeader({ alg: 'RS256' }).setIssuer(cfg.issuer!).setAudience(audience).setExpirationTime(expiry).sign(privateKey);
     const valid = await sign(cfg.audience!, now + 3600);
     expect((await verifier.verify(valid)).subject).toBe('synthetic-subject');
-    await expect(verifier.verify(valid.slice(0, -2) + 'xx')).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
+    const [header, payload, signature] = valid.split('.');
+    if (!header || !payload || !signature) throw new Error('Test signer returned an invalid compact JWT');
+    const tampered = `${header}.${payload}.${signature[0] === 'A' ? 'B' : 'A'}${signature.slice(1)}`;
+    await expect(verifier.verify(tampered)).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
     await expect(verifier.verify(await sign('other-api', now + 3600))).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
     await expect(verifier.verify(await sign(cfg.audience!, now - 100))).rejects.toMatchObject({ code: 'UNAUTHENTICATED' });
   });
