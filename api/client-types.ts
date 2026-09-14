@@ -11494,6 +11494,11 @@ export interface operations {
         };
         requestBody: {
             content: {
+                /**
+                 * @example {
+                 *       "asset_code": "DEMO"
+                 *     }
+                 */
                 "application/json": {
                     asset_code: string;
                 };
@@ -12331,6 +12336,14 @@ export interface operations {
         };
         requestBody: {
             content: {
+                /**
+                 * @example {
+                 *       "outcome_id": "yes",
+                 *       "side": "buy",
+                 *       "limit_price": "550000",
+                 *       "quantity": "2"
+                 *     }
+                 */
                 "application/json": {
                     outcome_id: string;
                     /** @enum {string} */

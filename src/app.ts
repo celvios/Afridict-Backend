@@ -576,7 +576,9 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   const bookParams=object({id:UUID,outcome:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'})});
   app.post('/v1/admin/markets/:id/trading/activate',{schema:contract('activateSyntheticClob','Trading',
     'Activate the governed synthetic order book','Requires market_approver, a published market inside its trading window, every published jurisdiction enabled for trading and a registry-approved synthetic asset binding. Cannot reopen a halted book. Production trading remains disabled.',
-    Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({asset_code:Type.String({minLength:1,maxLength:32})})})},
+    Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({
+      asset_code:Type.String({minLength:1,maxLength:32}),
+    },{examples:[{asset_code:'DEMO'}]})})},
     run(['market_approver'],async({sql,actor,request})=>{
       syntheticTrading();const result=await activateClob(sql,actor,id(request),(request.body as {asset_code:string}).asset_code,request.id);
       return {status:200,body:result};
@@ -601,7 +603,8 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     'Submit a fully collateralized limit order','Synthetic demo only. One integer share pays 1,000,000 collateral minor units under the published outcome policy. Buy funds the selected outcome; sell funds its complement. Both sides reserve worst-case price plus additive per-share fees. Resting price, then admission sequence, determines execution priority. Reuse the original idempotency key after a timeout.',
     object({order:Type.Ref(OrderSchema),fills:Type.Array(Type.Ref(FillSchema))}),{params:IdParams,command:true,status:201,
       body:object({outcome_id:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'}),
-        side:Type.String({enum:['buy','sell']}),limit_price:Uint,quantity:Uint})})},
+        side:Type.String({enum:['buy','sell']}),limit_price:Uint,quantity:Uint},
+      {examples:[{outcome_id:'yes',side:'buy',limit_price:'550000',quantity:'2'}]})})},
     run([],async({sql,actor,request})=>{
       syntheticTrading();const result=await submitOrder(sql,actor,id(request),request.body as {
         outcome_id:string;side:'buy'|'sell';limit_price:string;quantity:string},request.id);
