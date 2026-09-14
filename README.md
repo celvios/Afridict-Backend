@@ -13,7 +13,7 @@ npm ci
 npm run demo
 ```
 
-Open `http://127.0.0.1:3000/docs`. The demo binds to loopback, resets its embedded PostgreSQL database on restart, and uses synthetic `demo.<persona>` selectors. Never expose it publicly.
+Open `http://127.0.0.1:3000/docs`. The demo binds to loopback, resets its embedded PostgreSQL database on restart, and uses synthetic `demo.<persona>` selectors. It starts three currently tradable markets with collateral, visible order-book depth, and example fills for frontend development. Never expose it publicly.
 
 For PostgreSQL development, copy `.env.example` to an untracked `.env`. Set `POSTGRES_PASSWORD` and set `DATABASE_URL` to the matching `afridict` connection on `127.0.0.1:5432`, then run:
 

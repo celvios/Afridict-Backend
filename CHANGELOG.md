@@ -6,6 +6,7 @@ This file records externally meaningful backend behavior and operational changes
 
 ### Added
 
+- A startup-relative synthetic trading demo with open books, funded personas, visible depth, and example fills.
 - Governed binary, categorical, and scalar market definitions with independent policy review.
 - Append-only double-entry accounting, shared collateral reservations, and reconciliation records.
 - Synthetic NGN and approved-token funding workflows with explicit finance review and uncertain states.
