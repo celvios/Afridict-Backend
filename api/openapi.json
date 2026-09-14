@@ -18614,6 +18614,9 @@
                     "type": "string"
                   }
                 }
+              },
+              "example": {
+                "asset_code": "DEMO"
               }
             }
           }
@@ -19847,6 +19850,12 @@
                     "type": "string"
                   }
                 }
+              },
+              "example": {
+                "outcome_id": "yes",
+                "side": "buy",
+                "limit_price": "550000",
+                "quantity": "2"
               }
             }
           }
