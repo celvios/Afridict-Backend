@@ -14,6 +14,7 @@ This file records externally meaningful backend behavior and operational changes
 - Append-only double-entry accounting, shared collateral reservations, and reconciliation records.
 - Synthetic NGN and approved-token funding workflows with explicit finance review and uncertain states.
 - A fully collateralized deterministic synthetic order book with concurrency protection.
+- Recoverable authenticated WebSocket feeds for market events, aggregate books, private positions, and resolution changes, documented with AsyncAPI.
 - Evidence-backed resolution, independent adjudication, idempotent redemption, and testnet claim settlement preparation.
 - Generated OpenAPI 3.1 documentation and TypeScript client types for frontend integration.
 - Enforced test coverage, explicit CI quality gates, dependency update automation, structured logs, and optional sanitized error reporting.

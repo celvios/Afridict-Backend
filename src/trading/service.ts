@@ -238,6 +238,9 @@ export async function marketEvents(sql:Sql,marketId:string,after:string) {
   const market=await getMarket(sql,marketId);
   requireCondition(market.published_at,404,'NOT_FOUND','Market not found.');
   const cursor=integer(after);
+  const state=(await sql.query<{next_sequence:string}>('SELECT next_sequence::text FROM clob_markets WHERE market_id=$1',[marketId])).rows[0];
+  const latest=state?BigInt(state.next_sequence)-1n:0n;
+  requireCondition(cursor<=latest,409,'CURSOR_AHEAD','The event cursor is ahead of the market sequence. Refetch the current snapshot.');
   const rows=(await sql.query<{sequence:string;event_type:string;order_id:string|null;fill_id:string|null}>(`
     SELECT sequence::text,event_type,order_id,fill_id FROM clob_events
     WHERE market_id=$1 AND sequence>$2 ORDER BY sequence LIMIT 101`,[marketId,cursor.toString()])).rows;

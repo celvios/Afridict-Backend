@@ -1,0 +1,437 @@
+{
+  "asyncapi": "3.0.0",
+  "info": {
+    "title": "Afridict Realtime API",
+    "version": "0.1.0",
+    "description": "Authenticated, recoverable WebSocket delivery for synthetic market events, order-book snapshots, private positions, and governed resolution updates."
+  },
+  "defaultContentType": "application/json",
+  "servers": {
+    "local": {
+      "host": "127.0.0.1:3000",
+      "pathname": "/v1/realtime",
+      "protocol": "ws",
+      "description": "Local synthetic environment only."
+    }
+  },
+  "channels": {
+    "realtime": {
+      "address": "/v1/realtime",
+      "messages": {
+        "authenticate": {
+          "$ref": "#/components/messages/authenticate"
+        },
+        "subscribe": {
+          "$ref": "#/components/messages/subscribe"
+        },
+        "ping": {
+          "$ref": "#/components/messages/ping"
+        },
+        "serverMessage": {
+          "$ref": "#/components/messages/serverMessage"
+        }
+      }
+    }
+  },
+  "operations": {
+    "receiveClientMessage": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/realtime"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/realtime/messages/authenticate"
+        },
+        {
+          "$ref": "#/channels/realtime/messages/subscribe"
+        },
+        {
+          "$ref": "#/channels/realtime/messages/ping"
+        }
+      ]
+    },
+    "sendServerMessage": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/realtime"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/realtime/messages/serverMessage"
+        }
+      ]
+    }
+  },
+  "components": {
+    "messages": {
+      "authenticate": {
+        "name": "authenticate",
+        "summary": "Required first frame. Obtain the one-use ticket over authenticated HTTP.",
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "ticket"
+          ],
+          "properties": {
+            "type": {
+              "const": "authenticate"
+            },
+            "ticket": {
+              "type": "string",
+              "minLength": 43,
+              "maxLength": 43
+            }
+          }
+        }
+      },
+      "subscribe": {
+        "name": "subscribe",
+        "summary": "Replace the subscription and resume strictly after the supplied market sequence.",
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "market_id",
+            "after",
+            "outcomes"
+          ],
+          "properties": {
+            "type": {
+              "const": "subscribe"
+            },
+            "market_id": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "after": {
+              "$ref": "#/components/schemas/uint"
+            },
+            "outcomes": {
+              "type": "array",
+              "maxItems": 20,
+              "uniqueItems": true,
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "ping": {
+        "name": "ping",
+        "payload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ],
+          "properties": {
+            "type": {
+              "const": "ping"
+            }
+          }
+        }
+      },
+      "serverMessage": {
+        "name": "serverMessage",
+        "summary": "Authentication, subscription, event, snapshot, pong, or error frame.",
+        "payload": {
+          "$ref": "#/components/schemas/serverMessage"
+        }
+      }
+    },
+    "schemas": {
+      "uint": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]*)$"
+      },
+      "marketEvent": {
+        "type": "object",
+        "required": [
+          "sequence",
+          "event_type",
+          "order_id",
+          "fill_id"
+        ],
+        "properties": {
+          "sequence": {
+            "$ref": "#/components/schemas/uint"
+          },
+          "event_type": {
+            "enum": [
+              "activated",
+              "halted",
+              "order_accepted",
+              "fill",
+              "order_cancelled",
+              "resolution_proposed",
+              "resolution_challenged",
+              "resolution_finalized",
+              "redemption_batch",
+              "amm_execution",
+              "rfq_execution"
+            ]
+          },
+          "order_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          },
+          "fill_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
+          }
+        }
+      },
+      "level": {
+        "type": "object",
+        "required": [
+          "price",
+          "quantity"
+        ],
+        "properties": {
+          "price": {
+            "$ref": "#/components/schemas/uint"
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/uint"
+          }
+        }
+      },
+      "book": {
+        "type": "object",
+        "required": [
+          "market_id",
+          "outcome_id",
+          "status",
+          "sequence",
+          "bids",
+          "asks"
+        ],
+        "properties": {
+          "market_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outcome_id": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "halted"
+            ]
+          },
+          "sequence": {
+            "$ref": "#/components/schemas/uint"
+          },
+          "bids": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/level"
+            }
+          },
+          "asks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/level"
+            }
+          }
+        }
+      },
+      "position": {
+        "type": "object",
+        "required": [
+          "market_id",
+          "outcome_id",
+          "side",
+          "quantity",
+          "collateral_minor",
+          "fees_minor"
+        ],
+        "properties": {
+          "market_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "outcome_id": {
+            "type": "string"
+          },
+          "side": {
+            "enum": [
+              "buy",
+              "sell"
+            ]
+          },
+          "quantity": {
+            "$ref": "#/components/schemas/uint"
+          },
+          "collateral_minor": {
+            "$ref": "#/components/schemas/uint"
+          },
+          "fees_minor": {
+            "$ref": "#/components/schemas/uint"
+          }
+        }
+      },
+      "serverMessage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "authenticated"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "market_id",
+              "after",
+              "outcomes"
+            ],
+            "properties": {
+              "type": {
+                "const": "subscribed"
+              },
+              "market_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "after": {
+                "$ref": "#/components/schemas/uint"
+              },
+              "outcomes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "market_id",
+              "event"
+            ],
+            "properties": {
+              "type": {
+                "const": "market_event"
+              },
+              "market_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "event": {
+                "$ref": "#/components/schemas/marketEvent"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "snapshot"
+            ],
+            "properties": {
+              "type": {
+                "const": "book_snapshot"
+              },
+              "snapshot": {
+                "$ref": "#/components/schemas/book"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "market_id",
+              "sequence",
+              "items"
+            ],
+            "properties": {
+              "type": {
+                "const": "position_snapshot"
+              },
+              "market_id": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "sequence": {
+                "$ref": "#/components/schemas/uint"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/position"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "pong"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "code",
+              "message"
+            ],
+            "properties": {
+              "type": {
+                "const": "error"
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "x-recovery": {
+    "procedure": [
+      "Retain the highest contiguous market_event sequence applied.",
+      "Reconnect and authenticate with a new one-use ticket.",
+      "Subscribe with after equal to the retained sequence.",
+      "Apply events in order and replace local book and position state with snapshots.",
+      "On CURSOR_AHEAD, fetch the HTTP snapshot and subscribe from its sequence."
+    ],
+    "closeCodes": {
+      "1011": "Temporary server failure.",
+      "4401": "Authentication failed or timed out.",
+      "4404": "Market unavailable.",
+      "4408": "Outbound buffer exceeded."
+    }
+  }
+}
