@@ -20,6 +20,8 @@ interface Fill {id:string;outcome_id:string;quantity:string;buyer_collateral:str
   maker_owner:string;taker_owner:string;maker_side:'buy'|'sell';taker_side:'buy'|'sell'}
 interface AmmFill {id:string;owner_id:string;outcome_id:string;side:'buy'|'sell';quantity:string;
   buyer_collateral:string;seller_collateral:string}
+interface RfqFill {id:string;outcome_id:string;quantity:string;buyer_collateral:string;seller_collateral:string;
+  requester_owner_id:string;dealer_owner_id:string;requester_side:'buy'|'sell'}
 
 const iso=(date:Date)=>new Date(date).toISOString();
 export const publicEvidence=(row:EvidenceRow)=>({id:row.id,market_id:row.market_id,
@@ -89,6 +91,8 @@ export async function closeResolutionBook(sql:Sql,actor:Account,marketId:string,
     await marketEvent(sql,marketId,'halted');
   }
   await sql.query("UPDATE amm_pools SET status='halted',updated_at=now() WHERE market_id=$1 AND status='open'",[marketId]);
+  await sql.query("UPDATE rfq_quotes SET state='expired',updated_at=now() WHERE request_id IN (SELECT id FROM rfq_requests WHERE market_id=$1 AND state='open') AND state='open'",[marketId]);
+  await sql.query("UPDATE rfq_requests SET state='expired',updated_at=now() WHERE market_id=$1 AND state='open'",[marketId]);
   const orders=(await sql.query<{id:string;reservation_id:string;remaining:string;reserved_per_share:string}>(`
     SELECT id,reservation_id,remaining::text,reserved_per_share::text FROM clob_orders
     WHERE market_id=$1 AND state='open' ORDER BY sequence LIMIT 100 FOR UPDATE`,[marketId])).rows;
@@ -272,6 +276,10 @@ export async function redeemBatch(sql:Sql,actor:Account,marketId:string,request:
     FROM amm_quotes q WHERE q.market_id=$1 AND q.state='executed' AND NOT EXISTS
       (SELECT 1 FROM amm_redemptions r WHERE r.quote_id=q.id)
     ORDER BY q.executed_at,q.id LIMIT $2`,[marketId,Math.max(0,100-fills.length)])).rows;
+  const rfqFills=(await sql.query<RfqFill>(`SELECT f.id,f.outcome_id,f.quantity::text,f.buyer_collateral::text,
+    f.seller_collateral::text,f.requester_owner_id,f.dealer_owner_id,f.requester_side FROM rfq_fills f
+    WHERE f.market_id=$1 AND NOT EXISTS (SELECT 1 FROM rfq_redemptions r WHERE r.fill_id=f.id)
+    ORDER BY f.sequence LIMIT $2`,[marketId,Math.max(0,100-fills.length-ammFills.length)])).rows;
   // Only redemptions debit this pooled liability; serialize it per asset across markets.
   await sql.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',[
     `market_escrow:${state.asset_code}`]);
@@ -315,17 +323,38 @@ export async function redeemBatch(sql:Sql,actor:Account,marketId:string,request:
       [fill.id,marketId,fill.owner_id,userPayout.toString(),treasuryPayout.toString(),journal]);
     total+=payout.total;
   }
-  if(fills.length||ammFills.length)await marketEvent(sql,marketId,'redemption_batch');
+  for(const fill of rfqFills){
+    const buyerId=fill.requester_side==='buy'?fill.requester_owner_id:fill.dealer_owner_id;
+    const sellerId=fill.requester_side==='sell'?fill.requester_owner_id:fill.dealer_owner_id;
+    for(const ownerId of [buyerId,sellerId].sort())await lockOwnerAsset(sql,ownerId,state.asset_code);
+    const payout=payoutForFill(market.terms,row.final_result,fill);
+    const buyer=await ledgerAccount(sql,buyerId,state.asset_code,'user_available');
+    const seller=await ledgerAccount(sql,sellerId,state.asset_code,'user_available');
+    const journal=await postJournal(sql,{effectId:`resolution:${marketId}:rfq:${fill.id}`,
+      asset:state.asset_code,kind:'resolution_redemption',referenceId:fill.id,
+      reason:'Finalized outcome payout from institutional RFQ collateral',lines:[
+        {account:escrow,debit:payout.total,credit:0n},
+        ...(payout.buyer>0n?[{account:buyer,debit:0n,credit:payout.buyer}]:[]),
+        ...(payout.seller>0n?[{account:seller,debit:0n,credit:payout.seller}]:[]),
+      ]});
+    await sql.query(`INSERT INTO rfq_redemptions(fill_id,market_id,buyer_minor,seller_minor,journal_id)
+      VALUES($1,$2,$3,$4,$5)`,[fill.id,marketId,payout.buyer.toString(),payout.seller.toString(),journal]);
+    total+=payout.total;
+  }
+  if(fills.length||ammFills.length||rfqFills.length)await marketEvent(sql,marketId,'redemption_batch');
   const remaining=(await sql.query<{count:string}>(`SELECT
     ((SELECT count(*) FROM clob_fills f WHERE f.market_id=$1 AND NOT EXISTS
       (SELECT 1 FROM resolution_redemptions r WHERE r.fill_id=f.id))+
      (SELECT count(*) FROM amm_quotes q WHERE q.market_id=$1 AND q.state='executed' AND NOT EXISTS
-      (SELECT 1 FROM amm_redemptions r WHERE r.quote_id=q.id)))::text AS count`,
+      (SELECT 1 FROM amm_redemptions r WHERE r.quote_id=q.id))+
+     (SELECT count(*) FROM rfq_fills f WHERE f.market_id=$1 AND NOT EXISTS
+      (SELECT 1 FROM rfq_redemptions r WHERE r.fill_id=f.id)))::text AS count`,
     [marketId])).rows[0]!;
   await record(sql,{actor:actor.id,authority:'finance_operator',action:'resolution.redemption_batch',
     resource:marketId,request,reason:'Settle finalized synthetic claims exactly once',
-    after:{fill_count:fills.length+ammFills.length,paid_minor:total.toString(),remaining:remaining.count}});
-  return {market_id:marketId,fill_count:fills.length+ammFills.length,paid_minor:total.toString(),remaining:remaining.count};
+    after:{fill_count:fills.length+ammFills.length+rfqFills.length,paid_minor:total.toString(),remaining:remaining.count}});
+  return {market_id:marketId,fill_count:fills.length+ammFills.length+rfqFills.length,
+    paid_minor:total.toString(),remaining:remaining.count};
 }
 
 export async function getResolution(sql:Sql,marketId:string) {
@@ -350,6 +379,11 @@ export async function listMyRedemptions(sql:Sql,marketId:string,ownerId:string) 
     UNION ALL
     SELECT r.quote_id AS fill_id,r.user_minor::text AS amount_minor,r.created_at
     FROM amm_redemptions r WHERE r.market_id=$1 AND r.owner_id=$2
+    UNION ALL
+    SELECT r.fill_id,(CASE WHEN (f.requester_owner_id=$2 AND f.requester_side='buy') OR
+      (f.dealer_owner_id=$2 AND f.requester_side='sell') THEN r.buyer_minor ELSE r.seller_minor END)::text,
+      r.created_at FROM rfq_redemptions r JOIN rfq_fills f ON f.id=r.fill_id
+    WHERE r.market_id=$1 AND (f.requester_owner_id=$2 OR f.dealer_owner_id=$2)
     ORDER BY created_at,fill_id LIMIT 100`,[marketId,ownerId])).rows;
   return {items:rows.map(r=>({fill_id:r.fill_id,amount_minor:r.amount_minor,created_at:iso(r.created_at)}))};
 }

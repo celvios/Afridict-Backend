@@ -1,6 +1,6 @@
 # System architecture
 
-Afridict combines financial infrastructure with generalized prediction-market infrastructure. Binary, categorical, and scalar markets share one governed model. The planned execution stack is a deterministic CLOB, a bounded protocol AMM backstop, and institutional RFQ. Robinhood Chain is the committed settlement network.
+Afridict combines financial infrastructure with generalized prediction-market infrastructure. Binary, categorical, and scalar markets share one governed model. The synthetic execution stack includes a deterministic CLOB, a bounded protocol AMM backstop, and signed institutional RFQ. Robinhood Chain is the committed settlement network.
 
 ```mermaid
 flowchart LR
