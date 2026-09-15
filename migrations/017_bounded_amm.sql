@@ -85,3 +85,63 @@ END;
 $$;
 CREATE TRIGGER amm_quote_guard BEFORE UPDATE ON amm_quotes FOR EACH ROW EXECUTE FUNCTION guard_amm_quote();
 CREATE TRIGGER amm_quote_no_delete BEFORE DELETE ON amm_quotes FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();
+
+CREATE TABLE amm_redemptions (
+  quote_id uuid PRIMARY KEY REFERENCES amm_quotes(id),
+  market_id uuid NOT NULL REFERENCES resolution_cases(market_id),
+  owner_id uuid NOT NULL REFERENCES accounts(id),
+  user_minor numeric(78,0) NOT NULL CHECK (user_minor >= 0),
+  treasury_minor numeric(78,0) NOT NULL CHECK (treasury_minor >= 0),
+  journal_id uuid NOT NULL UNIQUE REFERENCES ledger_journals(id),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (user_minor+treasury_minor>0)
+);
+CREATE INDEX amm_redemptions_market ON amm_redemptions(market_id,quote_id);
+CREATE FUNCTION verify_amm_redemption() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE expected numeric; quote_owner uuid; quote_state text; case_state text;
+  journal_kind text; journal_asset text; market_asset text;
+BEGIN
+  SELECT q.quantity*1000000,q.owner_id,q.state,p.asset_code
+    INTO expected,quote_owner,quote_state,market_asset
+  FROM amm_quotes q JOIN amm_pools p ON p.market_id=q.market_id AND p.outcome_id=q.outcome_id
+  WHERE q.id=NEW.quote_id AND q.market_id=NEW.market_id;
+  SELECT state INTO case_state FROM resolution_cases WHERE market_id=NEW.market_id;
+  SELECT kind,asset_code INTO journal_kind,journal_asset FROM ledger_journals
+    WHERE id=NEW.journal_id AND reference_id=NEW.quote_id::text;
+  IF expected IS NULL OR NEW.owner_id<>quote_owner OR quote_state IS DISTINCT FROM 'executed' OR
+    NEW.user_minor+NEW.treasury_minor<>expected OR case_state IS DISTINCT FROM 'finalized' OR
+    journal_kind IS DISTINCT FROM 'resolution_redemption' OR journal_asset IS DISTINCT FROM market_asset THEN
+    RAISE EXCEPTION 'AMM redemption must conserve one finalized executed quote payout';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER amm_redemption_guard BEFORE INSERT ON amm_redemptions
+  FOR EACH ROW EXECUTE FUNCTION verify_amm_redemption();
+CREATE TRIGGER amm_redemptions_append_only BEFORE UPDATE OR DELETE ON amm_redemptions
+  FOR EACH ROW EXECUTE FUNCTION reject_history_mutation();
+
+ALTER TABLE reconciliation_runs ADD COLUMN liquidity_reserve_minor numeric(78,0) NOT NULL DEFAULT 0
+  CHECK (liquidity_reserve_minor >= 0);
+
+ALTER TABLE clob_events DROP CONSTRAINT clob_events_event_type_check;
+ALTER TABLE clob_events ADD CONSTRAINT clob_events_event_type_check CHECK (event_type IN
+  ('activated','halted','order_accepted','fill','order_cancelled','resolution_proposed',
+   'resolution_challenged','resolution_finalized','redemption_batch','amm_execution'));
+ALTER TABLE clob_events DROP CONSTRAINT clob_events_fill_id_fkey;
+
+ALTER TABLE settlement_batch_items DROP CONSTRAINT settlement_batch_items_fill_id_fkey;
+CREATE FUNCTION verify_settlement_payout_source() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM resolution_redemptions r WHERE r.fill_id=NEW.fill_id) AND
+     NOT EXISTS (SELECT 1 FROM amm_redemptions r JOIN amm_quotes q ON q.id=r.quote_id
+       WHERE r.quote_id=NEW.fill_id AND r.owner_id=NEW.owner_id AND
+         (CASE WHEN q.side='buy' THEN 'buyer' ELSE 'seller' END)=NEW.payout_side AND
+         r.user_minor=NEW.amount_minor) THEN
+    RAISE EXCEPTION 'Settlement item must reference an immutable redemption payout';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER settlement_payout_source_guard BEFORE INSERT ON settlement_batch_items
+  FOR EACH ROW EXECUTE FUNCTION verify_settlement_payout_source();

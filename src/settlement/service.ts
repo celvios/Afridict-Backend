@@ -67,7 +67,10 @@ export async function prepareSettlementBatch(sql:Sql,actor:Account,marketId:stri
         CASE WHEN m.side='sell' THEN m.owner_id ELSE t.owner_id END,r.seller_minor
       FROM resolution_redemptions r JOIN clob_fills f ON f.id=r.fill_id
       JOIN clob_orders m ON m.id=f.maker_order_id JOIN clob_orders t ON t.id=f.taker_order_id
-      WHERE r.market_id=$1)
+      WHERE r.market_id=$1
+      UNION ALL
+      SELECT r.quote_id,(CASE WHEN q.side='buy' THEN 'buyer' ELSE 'seller' END),r.owner_id,r.user_minor
+      FROM amm_redemptions r JOIN amm_quotes q ON q.id=r.quote_id WHERE r.market_id=$1)
     SELECT p.fill_id,p.payout_side,p.owner_id,s.address AS recipient_address,s.status AS account_status,p.amount_minor::text
     FROM payout p LEFT JOIN smart_accounts s ON s.owner_id=p.owner_id AND s.chain_id=$2
     WHERE p.amount_minor>0 AND NOT EXISTS (SELECT 1 FROM settlement_batch_items i

@@ -50,3 +50,7 @@ npm audit --omit=dev --audit-level=high
 - `CHANGELOG.md` records externally meaningful behavior and operational changes.
 
 Financial amounts cross APIs as exact integer strings. Clients must reuse the same idempotency key and body when retry behavior permits it, treat pending/uncertain states explicitly, and never infer settlement from a webhook or transaction hash.
+
+The synthetic liquidity API includes role-gated AMM activation, finance-controlled treasury funding,
+approved reference prices, 15-second user quotes, atomic execution, position reporting, governed
+redemption, and testnet settlement claims. These routes remain disabled outside the isolated demo.

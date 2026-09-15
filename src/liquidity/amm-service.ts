@@ -5,7 +5,7 @@ import { accountBalance, ledgerAccount, lockOwnerAsset, postJournal } from '../f
 import { reserve } from '../financial/reservations.js';
 import { getMarket } from '../markets/service.js';
 import type { Sql } from '../platform/database.js';
-import { requireCondition } from '../platform/errors.js';
+import { AppError,requireCondition } from '../platform/errors.js';
 import { parseOrderAmount, parsePrice, type OrderSide } from '../trading/model.js';
 import { previewAmmQuote, type AmmExposure, type AmmLimits } from './amm-model.js';
 
@@ -36,6 +36,10 @@ export async function activateAmm(sql:Sql,actor:Account,marketId:string,outcomeI
     JOIN financial_assets a ON a.code=b.asset_code WHERE b.policy_ref=$1 AND b.asset_code=$2 AND a.approved=true FOR SHARE`,
   [market.terms.risk.settlement_asset_ref,asset])).rows[0];
   requireCondition(binding?.approved&&binding.synthetic,403,'ASSET_NOT_APPROVED','AMM collateral requires an approved synthetic binding.');
+  const trading=(await sql.query<{asset_code:string}>(
+    'SELECT asset_code FROM clob_markets WHERE market_id=$1 FOR SHARE',[marketId])).rows[0];
+  requireCondition(trading?.asset_code===asset,409,'TRADING_NOT_ACTIVE',
+    'Activate the governed trading market with the same collateral asset before its AMM.');
   const liquidity=market.terms.liquidity;
   return (await sql.query<PoolRow>(`INSERT INTO amm_pools(market_id,outcome_id,asset_code,inventory_limit,subsidy_limit,
     loss_limit,max_slippage_bps,impact_bps,fee_bps,activated_by) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
@@ -78,14 +82,26 @@ export async function createAmmQuote(sql:Sql,actor:Account,input:{marketId:strin
   const pool=(await sql.query<PoolRow>('SELECT * FROM amm_pools WHERE market_id=$1 AND outcome_id=$2 FOR SHARE',
     [input.marketId,input.outcomeId])).rows[0];
   requireCondition(pool?.status==='open',409,'AMM_NOT_OPEN','AMM pool is not open.');
+  const market=await getMarket(sql,input.marketId);
+  requireCondition(now.getTime()>=Date.parse(market.terms.open_at)&&now.getTime()<Date.parse(market.terms.trading_cutoff),
+    409,'MARKET_NOT_OPEN','The published trading window is closed.');
+  requireCondition(market.terms.jurisdictions.includes(actor.jurisdiction),403,'COUNTRY_POLICY_BLOCKED',
+    'This market is not available in your jurisdiction.');
+  const country=(await sql.query<{trading_enabled:boolean}>(`SELECT trading_enabled FROM country_policies
+    WHERE jurisdiction=$1 AND category=$2 FOR SHARE`,[actor.jurisdiction,market.terms.category])).rows[0];
+  requireCondition(country?.trading_enabled,403,'COUNTRY_POLICY_BLOCKED','Trading is not enabled for this jurisdiction and category.');
   const assurance=await accountAssurance(sql,actor);
   requireCondition(actor.status==='active'&&assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
     403,'TRADING_NOT_ELIGIBLE','Trading requires an active, verified, eligible account.');
   const reference=(await sql.query<ReferenceRow>(`SELECT * FROM amm_reference_prices WHERE market_id=$1 AND outcome_id=$2
     AND observed_at<=$3 AND expires_at>$3 ORDER BY observed_at DESC,id DESC LIMIT 1`,[input.marketId,input.outcomeId,now])).rows[0];
   requireCondition(reference,409,'AMM_REFERENCE_STALE','No fresh approved AMM reference price is available.');
-  const quote=previewAmmQuote(limits(pool),exposure(pool),{side:input.side,quantity:parseOrderAmount(input.quantity,'quantity'),
-    referencePrice:BigInt(reference.price),limitPrice:parsePrice(input.limitPrice)});
+  let quote:ReturnType<typeof previewAmmQuote>;
+  try{quote=previewAmmQuote(limits(pool),exposure(pool),{side:input.side,
+    quantity:parseOrderAmount(input.quantity,'quantity'),referencePrice:BigInt(reference.price),
+    limitPrice:parsePrice(input.limitPrice)});}catch(error){
+    throw new AppError(409,'AMM_QUOTE_REJECTED',error instanceof Error?error.message:'AMM quote rejected.');
+  }
   requireCondition(BigInt(pool.funded_minor)>=quote.nextExposure.subsidyCommitted,409,'AMM_TREASURY_UNFUNDED',
     'The AMM treasury does not fund this quote.');
   const expiresAt=new Date(Math.min(reference.expires_at.getTime(),now.getTime()+15_000));
@@ -97,14 +113,28 @@ export async function createAmmQuote(sql:Sql,actor:Account,input:{marketId:strin
   return publicQuote(row);
 }
 
+export async function listAmmQuotes(sql:Sql,owner:string,marketId:string){
+  const rows=(await sql.query<QuoteRow>(`SELECT * FROM amm_quotes WHERE owner_id=$1 AND market_id=$2
+    ORDER BY created_at DESC,id DESC LIMIT 100`,[owner,marketId])).rows;
+  return {items:rows.map(publicQuote)};
+}
+
 export async function executeAmmQuote(sql:Sql,actor:Account,quoteId:string,request:string,now=new Date()){
   const quote=(await sql.query<QuoteRow>('SELECT * FROM amm_quotes WHERE id=$1 FOR UPDATE',[quoteId])).rows[0];
   requireCondition(quote&&quote.owner_id===actor.id,404,'AMM_QUOTE_NOT_FOUND','AMM quote not found.');
   requireCondition(quote.state==='quoted',409,'AMM_QUOTE_TERMINAL','AMM quote is no longer executable.');
   requireCondition(new Date(quote.expires_at)>now,409,'AMM_QUOTE_EXPIRED','AMM quote expired.');
+  const trading=(await sql.query<{status:string}>(
+    'SELECT status FROM clob_markets WHERE market_id=$1 FOR UPDATE',[quote.market_id])).rows[0];
+  const market=await getMarket(sql,quote.market_id);
+  requireCondition(trading?.status==='open'&&now.getTime()<Date.parse(market.terms.trading_cutoff),
+    409,'MARKET_NOT_OPEN','The published trading window is closed.');
   const pool=(await sql.query<PoolRow>('SELECT * FROM amm_pools WHERE market_id=$1 AND outcome_id=$2 FOR UPDATE',
     [quote.market_id,quote.outcome_id])).rows[0]!;
   requireCondition(pool.status==='open',409,'AMM_NOT_OPEN','AMM pool is not open.');
+  const assurance=await accountAssurance(sql,actor);
+  requireCondition(actor.status==='active'&&assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
+    403,'TRADING_NOT_ELIGIBLE','Trading requires an active, verified, eligible account.');
   const nextShares=BigInt(pool.shares_committed)+BigInt(quote.quantity);
   const nextSubsidy=BigInt(pool.subsidy_committed)+BigInt(quote.amm_collateral);
   const nextLoss=BigInt(pool.worst_case_loss_committed)+BigInt(quote.amm_collateral);
@@ -130,5 +160,9 @@ export async function executeAmmQuote(sql:Sql,actor:Account,quoteId:string,reque
     nextSubsidy.toString(),nextLoss.toString()]);
   const row=(await sql.query<QuoteRow>("UPDATE amm_quotes SET state='executed',executed_at=$2 WHERE id=$1 RETURNING *",
     [quote.id,now])).rows[0]!;
+  const event=(await sql.query<{sequence:string}>(`UPDATE clob_markets SET next_sequence=next_sequence+1,updated_at=now()
+    WHERE market_id=$1 RETURNING (next_sequence-1)::text AS sequence`,[quote.market_id])).rows[0]!;
+  await sql.query(`INSERT INTO clob_events(market_id,sequence,event_type,fill_id)
+    VALUES($1,$2,'amm_execution',$3)`,[quote.market_id,event.sequence,quote.id]);
   return publicQuote(row);
 }

@@ -259,13 +259,19 @@ export async function listFills(sql:Sql,ownerId:string,marketId:string) {
 
 export async function listPositions(sql:Sql,ownerId:string,marketId:string) {
   const rows=(await sql.query<{outcome_id:string;side:OrderSide;quantity:string;collateral_minor:string;
-    fees_minor:string}>(`SELECT f.outcome_id,o.side,sum(f.quantity)::text AS quantity,
-      sum(CASE WHEN o.side='buy' THEN f.buyer_collateral ELSE f.seller_collateral END)::text AS collateral_minor,
-      sum(CASE WHEN o.side='buy' THEN f.buyer_fee ELSE f.seller_fee END)::text AS fees_minor
+    fees_minor:string}>(`WITH positions AS (SELECT f.outcome_id,o.side,f.quantity,
+      CASE WHEN o.side='buy' THEN f.buyer_collateral ELSE f.seller_collateral END AS collateral_minor,
+      CASE WHEN o.side='buy' THEN f.buyer_fee ELSE f.seller_fee END AS fees_minor
     FROM clob_fills f JOIN clob_orders o ON o.id IN (f.maker_order_id,f.taker_order_id)
     WHERE f.market_id=$1 AND o.owner_id=$2 AND NOT EXISTS
       (SELECT 1 FROM resolution_redemptions r WHERE r.fill_id=f.id)
-    GROUP BY f.outcome_id,o.side ORDER BY f.outcome_id,o.side`,
+    UNION ALL
+    SELECT q.outcome_id,q.side,q.quantity,q.user_collateral,q.fee FROM amm_quotes q
+    WHERE q.market_id=$1 AND q.owner_id=$2 AND q.state='executed' AND NOT EXISTS
+      (SELECT 1 FROM amm_redemptions r WHERE r.quote_id=q.id))
+    SELECT outcome_id,side,sum(quantity)::text AS quantity,
+      sum(collateral_minor)::text AS collateral_minor,sum(fees_minor)::text AS fees_minor
+    FROM positions GROUP BY outcome_id,side ORDER BY outcome_id,side`,
   [marketId,ownerId])).rows;
   return {items:rows.map(row=>({market_id:marketId,...row}))};
 }

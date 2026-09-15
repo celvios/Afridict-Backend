@@ -27,11 +27,17 @@ beforeAll(async () => {
   await db.query(`INSERT INTO clob_asset_bindings(policy_ref,asset_code,approved,evidence_ref)
     VALUES ('demo:collateral','DEMO',true,'synthetic-only')`);
   const policy = terms();
+  policy.open_at = new Date(Date.now()-60_000).toISOString();
+  policy.trading_cutoff = new Date(Date.now()+60*60_000).toISOString();
+  policy.expected_event_at = new Date(Date.now()+2*60*60_000).toISOString();
+  policy.resolution_deadline = new Date(Date.now()+24*60*60_000).toISOString();
   policy.liquidity = { ...policy.liquidity, amm_enabled: true, subsidy_limit_minor: '10000000',
     inventory_limit_minor: '20', loss_limit_minor: '8000000', max_slippage_bps: 500 };
   marketId = randomUUID();
   await db.query(`INSERT INTO markets(id,creator_id,state,terms,policy_hash,published_at)
     VALUES($1,$2,'scheduled',$3,$4,now())`, [marketId, ids.creator, JSON.stringify(policy), hash(policy)]);
+  await db.query(`INSERT INTO clob_markets(market_id,asset_code,status,activated_by)
+    VALUES($1,'DEMO','open',$2)`,[marketId,approver.id]);
   await db.transaction(sql => activateAmm(sql, approver, marketId, 'yes', 'DEMO', 100));
   await db.transaction(sql => fundAmm(sql, finance, marketId, 'yes', '8000000', 'initial-funding'));
   await db.transaction(async sql => {
@@ -82,5 +88,24 @@ describe('bounded synthetic AMM workflow', () => {
       .rejects.toMatchObject({ code: 'AMM_QUOTE_EXPIRED' });
     expect(await accountBalance(db, await ledgerAccount(db, trader.id, 'DEMO', 'user_available'))).toBe(before);
     expect((await db.query<{state:string}>('SELECT state FROM amm_quotes WHERE id=$1', [quote.id])).rows[0]!.state).toBe('quoted');
+  });
+
+  it('serializes competing execution attempts without double-spending collateral',async()=>{
+    const now=new Date();
+    await db.transaction(sql=>recordAmmReference(sql,approver,{marketId,outcomeId:'yes',price:'500000',
+      observedAt:now,expiresAt:new Date(now.getTime()+60_000),sourceRef:'approved-feed:concurrency'}));
+    const quote=await db.transaction(sql=>createAmmQuote(sql,trader,{marketId,outcomeId:'yes',side:'buy',
+      quantity:'1',limitPrice:'600000'},now));
+    const escrow=await ledgerAccount(db,null,'DEMO','market_escrow');
+    const before=await accountBalance(db,escrow);
+    const attempts=await Promise.allSettled([
+      db.transaction(sql=>executeAmmQuote(sql,trader,quote.id,'concurrent-one',new Date(now.getTime()+1000))),
+      db.transaction(sql=>executeAmmQuote(sql,trader,quote.id,'concurrent-two',new Date(now.getTime()+1000))),
+    ]);
+    expect(attempts.filter(result=>result.status==='fulfilled')).toHaveLength(1);
+    expect(attempts.filter(result=>result.status==='rejected')).toHaveLength(1);
+    expect(await accountBalance(db,escrow)).toBe(before+1_000_000n);
+    expect((await db.query<{count:string}>(`SELECT count(*)::text AS count FROM ledger_journals
+      WHERE effect_id=$1`,[`amm:${quote.id}:execution`])).rows[0]!.count).toBe('1');
   });
 });
