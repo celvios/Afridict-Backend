@@ -48,6 +48,8 @@ import type {ResolutionResult} from './resolution/model.js';
 import {SettlementBatchSchema,SettlementClaimSchema,SettlementRefreshSchema,settlementSchemas} from './settlement/contracts.js';
 import {getSettlementBatch,listMySettlementClaims,prepareSettlementBatch,refreshSettlementBatch,
   submitSettlementBatch,type SettlementDependencies} from './settlement/service.js';
+import {AmmFundingSchema,AmmPoolSchema,AmmQuoteSchema,AmmReferenceSchema,liquiditySchemas} from './liquidity/contracts.js';
+import {activateAmm,createAmmQuote,executeAmmQuote,fundAmm,listAmmQuotes,recordAmmReference} from './liquidity/amm-service.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -84,11 +86,11 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   await app.register(swagger, { openapi: { openapi: '3.1.1',
     info: { title: 'Afridict Backend API', version: '0.5.0', description: 'Financial and prediction-market infrastructure API. Collateralized matching, governed resolution, redemption and Robinhood Chain settlement preparation operate only in the isolated synthetic testnet workflow. Real-money trading, mainnet settlement and production outcome finality remain disabled pending approved deployments, adapters and governance.' },
     servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development only; not a production address' }],
-    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic','Trading','Resolution','Settlement'].map(name => ({ name, description: `${name} operations` })),
+    tags: ['System','Identity','Compliance','Markets','Governance','Proposals','Audit','Funding','Portfolio','Finance','Synthetic','Trading','Liquidity','Resolution','Settlement'].map(name => ({ name, description: `${name} operations` })),
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
       description: 'OIDC access token verified against configured issuer, audience and JWKS. Roles come from server-owned account records. Demo mode accepts only synthetic demo.<persona> selectors; those never work in production.' } } },
   }, refResolver: { buildLocalReference: json => String(json.$id) } });
-  for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas,...settlementSchemas]) app.addSchema(schema);
+  for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas,...settlementSchemas,...liquiditySchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
   app.addHook('preParsing',async(request,_reply,payload)=>{
@@ -574,6 +576,41 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   const syntheticTrading=()=>requireCondition(cfg.environment!=='production' && cfg.authMode==='demo' &&
     cfg.financialMode==='synthetic',403,'TRADING_NOT_ACTIVE','Trading is available only in the isolated synthetic demo.');
   const bookParams=object({id:UUID,outcome:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'})});
+  app.post('/v1/admin/markets/:id/amm/:outcome/activate',{schema:contract('activateSyntheticAmm','Liquidity',
+    'Activate a bounded AMM pool','Synthetic only. Copies immutable market liquidity limits into a per-outcome pool. Requires an approved synthetic collateral binding. Activation does not fund the treasury.',Type.Ref(AmmPoolSchema),
+    {params:bookParams,command:true,roles:['market_approver'],body:object({asset_code:Type.String({minLength:1,maxLength:32}),
+      impact_bps:Type.Integer({minimum:0,maximum:10000})})})},run(['market_approver'],async({sql,actor,request})=>{
+      syntheticTrading();const p=request.params as {id:string;outcome:string},b=request.body as {asset_code:string;impact_bps:number};
+      return {status:200,body:await activateAmm(sql,actor,p.id,p.outcome,b.asset_code,b.impact_bps)};
+    }));
+  app.post('/v1/admin/markets/:id/amm/:outcome/funding',{schema:contract('fundSyntheticAmm','Liquidity',
+    'Fund a bounded AMM treasury','Synthetic finance-only operation. Posts balanced custody and liquidity-reserve entries and cannot exceed the published subsidy limit.',Type.Ref(AmmFundingSchema),
+    {params:bookParams,command:true,roles:['finance_operator'],body:object({amount_minor:Uint})})},
+    run(['finance_operator'],async({sql,actor,request})=>{syntheticTrading();const p=request.params as {id:string;outcome:string};
+      return {status:200,body:await fundAmm(sql,actor,p.id,p.outcome,(request.body as {amount_minor:string}).amount_minor,request.id)};
+    }));
+  app.post('/v1/admin/markets/:id/amm/:outcome/reference-prices',{schema:contract('recordSyntheticAmmReference','Liquidity',
+    'Record an approved AMM reference price','Appends a time-bounded server-owned reference. Clients cannot set the reference used by quote creation.',Type.Ref(AmmReferenceSchema),
+    {params:bookParams,command:true,status:201,roles:['market_approver'],body:object({price:Uint,observed_at:Timestamp,
+      expires_at:Timestamp,source_ref:EvidenceRef})})},run(['market_approver'],async({sql,actor,request})=>{
+      syntheticTrading();const p=request.params as {id:string;outcome:string},b=request.body as {price:string;observed_at:string;expires_at:string;source_ref:string};
+      return {status:201,body:await recordAmmReference(sql,actor,{marketId:p.id,outcomeId:p.outcome,price:b.price,
+        observedAt:new Date(b.observed_at),expiresAt:new Date(b.expires_at),sourceRef:b.source_ref})};
+    }));
+  app.post('/v1/markets/:id/amm/:outcome/quotes',{schema:contract('createSyntheticAmmQuote','Liquidity',
+    'Create an expiring AMM quote','Uses the latest fresh approved reference and current pool exposure. The quote expires within 15 seconds and reserves no funds until execution.',Type.Ref(AmmQuoteSchema),
+    {params:bookParams,command:true,status:201,body:object({side:Type.String({enum:['buy','sell']}),quantity:Uint,limit_price:Uint})})},
+    run([],async({sql,actor,request})=>{syntheticTrading();const p=request.params as {id:string;outcome:string},
+      b=request.body as {side:'buy'|'sell';quantity:string;limit_price:string};return {status:201,
+        body:await createAmmQuote(sql,actor,{marketId:p.id,outcomeId:p.outcome,side:b.side,quantity:b.quantity,limitPrice:b.limit_price})};
+    }));
+  app.post('/v1/amm/quotes/:id/execute',{schema:contract('executeSyntheticAmmQuote','Liquidity',
+    'Execute an AMM quote atomically','Locks the quote and pool, reserves user collateral, consumes treasury collateral, posts one balanced execution and makes the quote terminal.',Type.Ref(AmmQuoteSchema),
+    {params:IdParams,command:true,body:object({})})},run([],async({sql,actor,request})=>{syntheticTrading();return {status:200,
+      body:await executeAmmQuote(sql,actor,id(request),request.id)};}));
+  app.get('/v1/markets/:id/amm/quotes',{schema:contract('listMySyntheticAmmQuotes','Liquidity',
+    'List your AMM quotes','Returns the caller latest 100 quote states for this market.',object({items:Type.Array(Type.Ref(AmmQuoteSchema))}),{params:IdParams})},
+    async request=>{const {a}=await authenticated(request);return listAmmQuotes(db,a.id,id(request));});
   app.post('/v1/admin/markets/:id/trading/activate',{schema:contract('activateSyntheticClob','Trading',
     'Activate the governed synthetic order book','Requires market_approver, a published market inside its trading window, every published jurisdiction enabled for trading and a registry-approved synthetic asset binding. Cannot reopen a halted book. Production trading remains disabled.',
     Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({

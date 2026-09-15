@@ -39,7 +39,7 @@ const evidence=(marketId:string,who:string,digest:string)=>post(who,
     observed_at:new Date(clockNow.getTime()-60_000).toISOString(),
   });
 
-async function createMarket(type:'binary'|'categorical'='binary'){
+async function createMarket(type:'binary'|'categorical'='binary',amm=false){
   const policy=terms(type),now=Date.now(),id=randomUUID();
   policy.open_at=new Date(now-60_000).toISOString();
   policy.trading_cutoff=new Date(now+3600_000).toISOString();
@@ -48,6 +48,8 @@ async function createMarket(type:'binary'|'categorical'='binary'){
   policy.resolution.challenge_window_seconds=60;
   policy.resolution.timelock_seconds=60;
   policy.risk.exposure_limit_minor='100000000';
+  if(amm)policy.liquidity={...policy.liquidity,amm_enabled:true,inventory_limit_minor:'20',
+    subsidy_limit_minor:'10000000',loss_limit_minor:'8000000',max_slippage_bps:500};
   await db.query(`INSERT INTO markets(id,creator_id,state,terms,policy_hash,published_at)
     VALUES ($1,$2,'scheduled',$3,$4,now())`,[id,identities.creator,JSON.stringify(policy),hash(policy)]);
   expect((await post('approver',`/v1/admin/markets/${id}/trading/activate`,{asset_code:'DEMO'})).statusCode).toBe(200);
@@ -257,6 +259,48 @@ describe('governed synthetic resolution and exactly-once redemption',()=>{
     expect(settled.json()).toMatchObject({fill_count:1,paid_minor:'1000000',remaining:'0'});
     expect(await balance('trader','user_available')).toBe(buyerBefore-6_000n);
     expect(await balance('proposer','user_available')).toBe(sellerBefore-4_000n);
+  });
+
+  it('redeems an AMM quote exactly once and makes its user payout settlement-ready',async()=>{
+    clockNow=new Date();
+    const market=await createMarket('binary',true);
+    expect((await post('approver',`/v1/admin/markets/${market.id}/amm/yes/activate`,
+      {asset_code:'DEMO',impact_bps:100})).statusCode).toBe(200);
+    expect((await post('finance',`/v1/admin/markets/${market.id}/amm/yes/funding`,
+      {amount_minor:'8000000'})).statusCode).toBe(200);
+    const observed=new Date();
+    expect((await post('approver',`/v1/admin/markets/${market.id}/amm/yes/reference-prices`,{
+      price:'500000',observed_at:new Date(observed.getTime()-1000).toISOString(),
+      expires_at:new Date(observed.getTime()+60_000).toISOString(),source_ref:'approved-feed:resolution-amm'})).statusCode).toBe(201);
+    const quote=await post('trader',`/v1/markets/${market.id}/amm/yes/quotes`,{
+      side:'buy',quantity:'2',limit_price:'600000'});
+    expect(quote.statusCode,quote.body).toBe(201);
+    expect((await post('trader',`/v1/amm/quotes/${quote.json().id}/execute`,{})).statusCode).toBe(200);
+    expect((await get('trader',`/v1/markets/${market.id}/positions`)).json().items).toMatchObject([
+      {outcome_id:'yes',side:'buy',quantity:'2'}]);
+    await close(market.id,market.policy);
+    const proof=await evidence(market.id,'resolution_proposer','e'.repeat(64));
+    expect(proof.statusCode,proof.body).toBe(201);
+    expect((await post('resolution_proposer',`/v1/admin/markets/${market.id}/resolution/proposal`,{
+      result:{kind:'outcome',outcome_id:'yes'},evidence_id:proof.json().id,reason:'Observed synthetic result'})).statusCode).toBe(201);
+    clockNow=new Date(clockNow.getTime()+61_000);
+    for(const who of ['resolution','resolution_judge_two','resolution_judge_three'])
+      expect((await vote(market.id,who,'proposal',proof.json().id)).statusCode).toBe(201);
+    clockNow=new Date(clockNow.getTime()+120_000);
+    expect((await post('resolution_finalizer',`/v1/admin/markets/${market.id}/resolution/finalize`,
+      {reason:'Independent quorum selected documented result'})).statusCode).toBe(200);
+    const before=await balance('trader','user_available');
+    const [first,second]=await Promise.all([
+      post('finance',`/v1/admin/markets/${market.id}/resolution/redeem-batch`,{},'amm-redeem-one'),
+      post('finance',`/v1/admin/markets/${market.id}/resolution/redeem-batch`,{},'amm-redeem-two')]);
+    expect([first.json().fill_count,second.json().fill_count].sort()).toEqual([0,1]);
+    expect(await balance('trader','user_available')).toBe(before+2_000_000n);
+    expect((await get('trader',`/v1/markets/${market.id}/positions`)).json().items).toEqual([]);
+    expect((await get('trader',`/v1/markets/${market.id}/redemptions`)).json().items).toMatchObject([
+      {fill_id:quote.json().id,amount_minor:'2000000'}]);
+    const prepared=await post('finance',`/v1/admin/markets/${market.id}/settlement-batches`,{},'amm-settlement');
+    expect(prepared.statusCode,prepared.body).toBe(201);
+    expect(prepared.json()).toMatchObject({item_count:1,total_minor:'2000000'});
   });
 
   it('prepares one deterministic chain claim, verifies quorum and detects later divergence',async()=>{

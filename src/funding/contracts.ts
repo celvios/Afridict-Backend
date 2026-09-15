@@ -43,7 +43,8 @@ export const AdminCryptoWithdrawalSchema=object({id:UUID,asset:Type.String(),amo
 export const ReconciliationSchema=object({id:UUID,asset:Type.String(),status:Type.String({enum:['balanced','exceptions_opened']}),
   escrow_ledger_minor:Uint,chain_net_minor:Type.String({pattern:'^-?(0|[1-9][0-9]*)$'}),
   partner_deposits_minor:Uint,finalized_deposits_minor:Uint,user_claims_minor:Uint,
-  market_collateral_minor:Uint,protocol_fee_minor:Uint,exceptions:Type.Array(Type.String()),created_at:Timestamp},
+  market_collateral_minor:Uint,liquidity_reserve_minor:Uint,protocol_fee_minor:Uint,
+  exceptions:Type.Array(Type.String()),created_at:Timestamp},
   {$id:'ReconciliationSnapshot',description:'Compares stored observations and ledger. It is not independent proof of partner or chain state.'});
 export const StatementSchema=object({id:UUID,effect_id:Type.String(),kind:Type.String(),reference_id:Type.String(),
   asset:Type.String(),bucket:Type.String(),direction:Type.String({enum:['increase','decrease']}),

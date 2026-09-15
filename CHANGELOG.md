@@ -7,6 +7,7 @@ This file records externally meaningful backend behavior and operational changes
 ### Added
 
 - Deterministic, non-executable AMM quote mathematics with conservative inventory, subsidy, slippage, and worst-case loss bounds.
+- Governed synthetic AMM activation, treasury funding, fresh-reference quotes, atomic execution, portfolio positions, exactly-once redemption, reconciliation, and settlement claims.
 - A startup-relative synthetic trading demo with open books, funded personas, visible depth, and example fills.
 - Governed binary, categorical, and scalar market definitions with independent policy review.
 - Append-only double-entry accounting, shared collateral reservations, and reconciliation records.
