@@ -50,6 +50,9 @@ import {getSettlementBatch,listMySettlementClaims,prepareSettlementBatch,refresh
   submitSettlementBatch,type SettlementDependencies} from './settlement/service.js';
 import {AmmFundingSchema,AmmPoolSchema,AmmQuoteSchema,AmmReferenceSchema,liquiditySchemas} from './liquidity/contracts.js';
 import {activateAmm,createAmmQuote,executeAmmQuote,fundAmm,listAmmQuotes,recordAmmReference} from './liquidity/amm-service.js';
+import {RfqEntitySchema,RfqFillSchema,RfqMembershipSchema,RfqQuoteSchema,RfqRequestSchema,rfqSchemas} from './liquidity/rfq-contracts.js';
+import {acceptRfqQuote,addRfqMember,approveRfqEntity,cancelRfqRequest,createRfqEntity,createRfqQuote,
+  createRfqRequest,listRfqEntities,listRfqFills,listRfqMembers,listRfqQuotes,listRfqRequests} from './liquidity/rfq-service.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -90,7 +93,8 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT',
       description: 'OIDC access token verified against configured issuer, audience and JWKS. Roles come from server-owned account records. Demo mode accepts only synthetic demo.<persona> selectors; those never work in production.' } } },
   }, refResolver: { buildLocalReference: json => String(json.$id) } });
-  for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas,...settlementSchemas,...liquiditySchemas]) app.addSchema(schema);
+  for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas,...settlementSchemas,
+    ...liquiditySchemas,...rfqSchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
   app.addHook('preParsing',async(request,_reply,payload)=>{
@@ -576,6 +580,72 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
   const syntheticTrading=()=>requireCondition(cfg.environment!=='production' && cfg.authMode==='demo' &&
     cfg.financialMode==='synthetic',403,'TRADING_NOT_ACTIVE','Trading is available only in the isolated synthetic demo.');
   const bookParams=object({id:UUID,outcome:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'})});
+  app.post('/v1/admin/rfq/entities',{schema:contract('createRfqEntity','Liquidity','Create an institutional RFQ entity',
+    'Creates a pending entity with an exact per-market exposure limit. A different compliance officer must approve it.',
+    Type.Ref(RfqEntitySchema),{command:true,status:201,roles:['compliance_officer'],body:object({
+      legal_name:Type.String({minLength:2,maxLength:160}),exposure_limit_minor:Uint})})},
+  run(['compliance_officer'],async({sql,actor,request})=>{syntheticTrading();const body=request.body as {
+    legal_name:string;exposure_limit_minor:string};return {status:201,body:await createRfqEntity(sql,actor,
+      body.legal_name,body.exposure_limit_minor,request.id)};}));
+  app.get('/v1/admin/rfq/entities',{schema:contract('listRfqEntities','Liquidity','List institutional RFQ entities',
+    'Compliance-only onboarding view with approval state and exact per-market exposure limits.',
+    object({items:Type.Array(Type.Ref(RfqEntitySchema))}),{roles:['compliance_officer']})},async request=>{
+      await authenticated(request,['compliance_officer']);return listRfqEntities(db);});
+  app.post('/v1/admin/rfq/entities/:id/approve',{schema:contract('approveRfqEntity','Liquidity',
+    'Approve an institutional RFQ entity','Activates a pending entity under maker-checker separation.',
+    Type.Ref(RfqEntitySchema),{params:IdParams,command:true,roles:['compliance_officer'],body:object({})})},
+  run(['compliance_officer'],async({sql,actor,request})=>{syntheticTrading();return {status:200,
+    body:await approveRfqEntity(sql,actor,id(request),request.id)};}));
+  app.post('/v1/admin/rfq/entities/:id/members',{schema:contract('addRfqEntityMember','Liquidity',
+    'Authorize an institutional RFQ account','Requester members create and accept RFQs. Dealer members submit Ed25519-signed quotes using the approved SPKI key.',
+    Type.Ref(RfqMembershipSchema),{params:IdParams,command:true,status:201,roles:['compliance_officer'],body:object({
+      account_id:UUID,role:Type.String({enum:['requester','dealer']}),
+      signing_public_key:Type.Optional(Type.String({minLength:40,maxLength:2048}))})})},
+  run(['compliance_officer'],async({sql,actor,request})=>{syntheticTrading();const body=request.body as {
+    account_id:string;role:'requester'|'dealer';signing_public_key?:string};return {status:201,
+      body:await addRfqMember(sql,actor,id(request),body.account_id,body.role,body.signing_public_key,request.id)};}));
+  app.get('/v1/admin/rfq/entities/:id/members',{schema:contract('listRfqEntityMembers','Liquidity',
+    'List authorized RFQ entity accounts','Compliance-only membership view. Public keys are withheld; dealer key fingerprints remain available for verification.',
+    object({items:Type.Array(Type.Ref(RfqMembershipSchema))}),{params:IdParams,roles:['compliance_officer']})},async request=>{
+      await authenticated(request,['compliance_officer']);return listRfqMembers(db,id(request));});
+  app.post('/v1/markets/:id/rfqs',{schema:contract('createInstitutionalRfq','Liquidity','Create an institutional RFQ',
+    'Requires an active requester membership and verified trading eligibility. Quantity counts against the entity per-market exposure limit.',
+    Type.Ref(RfqRequestSchema),{params:IdParams,command:true,status:201,body:object({entity_id:UUID,
+      outcome_id:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'}),side:Type.String({enum:['buy','sell']}),
+      quantity:Uint,expires_at:Timestamp})})},run([],async({sql,actor,request})=>{syntheticTrading();const body=request.body as {
+      entity_id:string;outcome_id:string;side:'buy'|'sell';quantity:string;expires_at:string};return {status:201,
+      body:await createRfqRequest(sql,actor,{entityId:body.entity_id,marketId:id(request),outcomeId:body.outcome_id,
+        side:body.side,quantity:body.quantity,expiresAt:new Date(body.expires_at)},request.id)};}));
+  app.get('/v1/markets/:id/rfqs',{schema:contract('listInstitutionalRfqs','Liquidity','List visible institutional RFQs',
+    'Requester members see their requests. Active dealers see unexpired open requests. Customer identities are omitted.',
+    object({items:Type.Array(Type.Ref(RfqRequestSchema))}),{params:IdParams})},async request=>{const {a}=await authenticated(request);
+      return listRfqRequests(db,a,id(request));});
+  app.get('/v1/markets/:id/rfq-fills',{schema:contract('listMyInstitutionalRfqFills','Liquidity',
+    'List institutional RFQ executions','Returns immutable executions where the caller represented either institutional counterparty. Counterparty account identities are omitted.',
+    object({items:Type.Array(Type.Ref(RfqFillSchema))}),{params:IdParams})},async request=>{const {a}=await authenticated(request);
+      return listRfqFills(db,a,id(request));});
+  app.post('/v1/rfqs/:id/quotes',{schema:contract('createInstitutionalRfqQuote','Liquidity','Submit a signed RFQ quote',
+    'Requires an active dealer membership. Sign the no-whitespace UTF-8 JSON with Ed25519 using properties in this exact order: version, request_id, price, expires_at, nonce. Version is numeric 1; all other values are strings. Price is canonical and expires_at is normalized RFC 3339 UTC.',
+    Type.Ref(RfqQuoteSchema),{params:IdParams,command:true,status:201,body:object({dealer_entity_id:UUID,price:Uint,
+      expires_at:Timestamp,nonce:Type.String({minLength:8,maxLength:128,pattern:'^[A-Za-z0-9_-]+$'}),
+      signature:Type.String({minLength:40,maxLength:2048})})})},run([],async({sql,actor,request})=>{syntheticTrading();const body=request.body as {
+      dealer_entity_id:string;price:string;expires_at:string;nonce:string;signature:string};return {status:201,
+      body:await createRfqQuote(sql,actor,{entityId:body.dealer_entity_id,requestId:id(request),price:body.price,
+        expiresAt:new Date(body.expires_at),nonce:body.nonce,signature:body.signature},request.id)};}));
+  app.get('/v1/rfqs/:id/quotes',{schema:contract('listInstitutionalRfqQuotes','Liquidity','List visible RFQ quotes',
+    'The requester sees all quotes for its request. A dealer sees only its own quote.',
+    object({items:Type.Array(Type.Ref(RfqQuoteSchema))}),{params:IdParams})},async request=>{const {a}=await authenticated(request);
+      return listRfqQuotes(db,a,id(request));});
+  const rfqQuoteParams=object({id:UUID,quote:UUID});
+  app.post('/v1/rfqs/:id/quotes/:quote/accept',{schema:contract('acceptInstitutionalRfqQuote','Liquidity',
+    'Accept an RFQ quote atomically','Rechecks both institutions, both accounts, market state, expiry and exposure limits; then reserves both counterparties, posts one balanced execution, records a position and rejects competing quotes.',
+    Type.Ref(RfqFillSchema),{params:rfqQuoteParams,command:true,body:object({})})},run([],async({sql,actor,request})=>{
+      syntheticTrading();const params=request.params as {id:string;quote:string};return {status:200,
+        body:await acceptRfqQuote(sql,actor,params.id,params.quote,request.id)};}));
+  app.post('/v1/rfqs/:id/cancel',{schema:contract('cancelInstitutionalRfq','Liquidity','Cancel an open RFQ request',
+    'Requester-only terminal cancellation. Open dealer quotes become rejected.',Type.Ref(RfqRequestSchema),
+    {params:IdParams,command:true,body:object({})})},run([],async({sql,actor,request})=>{syntheticTrading();return {status:200,
+      body:await cancelRfqRequest(sql,actor,id(request),request.id)};}));
   app.post('/v1/admin/markets/:id/amm/:outcome/activate',{schema:contract('activateSyntheticAmm','Liquidity',
     'Activate a bounded AMM pool','Synthetic only. Copies immutable market liquidity limits into a per-outcome pool. Requires an approved synthetic collateral binding. Activation does not fund the treasury.',Type.Ref(AmmPoolSchema),
     {params:bookParams,command:true,roles:['market_approver'],body:object({asset_code:Type.String({minLength:1,maxLength:32}),

@@ -268,7 +268,18 @@ export async function listPositions(sql:Sql,ownerId:string,marketId:string) {
     UNION ALL
     SELECT q.outcome_id,q.side,q.quantity,q.user_collateral,q.fee FROM amm_quotes q
     WHERE q.market_id=$1 AND q.owner_id=$2 AND q.state='executed' AND NOT EXISTS
-      (SELECT 1 FROM amm_redemptions r WHERE r.quote_id=q.id))
+      (SELECT 1 FROM amm_redemptions r WHERE r.quote_id=q.id)
+    UNION ALL
+    SELECT f.outcome_id,
+      CASE WHEN f.requester_owner_id=$2 THEN f.requester_side
+        WHEN f.requester_side='buy' THEN 'sell' ELSE 'buy' END AS side,
+      f.quantity,
+      CASE WHEN (f.requester_owner_id=$2 AND f.requester_side='buy') OR
+        (f.dealer_owner_id=$2 AND f.requester_side='sell') THEN f.buyer_collateral ELSE f.seller_collateral END,
+      CASE WHEN (f.requester_owner_id=$2 AND f.requester_side='buy') OR
+        (f.dealer_owner_id=$2 AND f.requester_side='sell') THEN f.buyer_fee ELSE f.seller_fee END
+    FROM rfq_fills f WHERE f.market_id=$1 AND (f.requester_owner_id=$2 OR f.dealer_owner_id=$2)
+      AND NOT EXISTS (SELECT 1 FROM rfq_redemptions r WHERE r.fill_id=f.id))
     SELECT outcome_id,side,sum(quantity)::text AS quantity,
       sum(collateral_minor)::text AS collateral_minor,sum(fees_minor)::text AS fees_minor
     FROM positions GROUP BY outcome_id,side ORDER BY outcome_id,side`,

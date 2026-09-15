@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { generateKeyPairSync,randomUUID,sign } from 'node:crypto';
 import { afterAll,beforeAll,describe,expect,it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { embeddedDatabase } from '../scripts/embedded.js';
@@ -11,6 +11,7 @@ import { postgres,type Database } from '../src/platform/database.js';
 import type { MarketTerms } from '../src/contracts.js';
 import type {SettlementDependencies,SettlementObservation} from '../src/settlement/service.js';
 import type {Address,Hex} from 'viem';
+import {rfqSigningPayload,signingKeyFingerprint} from '../src/liquidity/rfq-service.js';
 
 let db:Database,app:FastifyInstance,schema:string|undefined;
 let identities:Record<string,string>,clockNow=new Date(),key=0;
@@ -19,6 +20,8 @@ const settlementContract='0x1111111111111111111111111111111111111111' as Address
 const settlementCodeHash=`0x${'2'.repeat(64)}` as Hex;
 let settlementObservation:SettlementObservation|null=null,settlementAttempt=0;
 let settlementSignerUncertain=false,settlementRecovered:{transactionHash:Hex;nonce:bigint}|null=null;
+const rfqKey=generateKeyPairSync('ed25519');
+const rfqPublicKey=rfqKey.publicKey.export({format:'der',type:'spki'}).toString('base64');
 const settlementDependencies:SettlementDependencies={
   submitter:{async submit(){settlementAttempt+=1;if(settlementSignerUncertain)return {state:'uncertain' as const};
     return {state:'submitted' as const,transactionHash:`0x${settlementAttempt.toString(16).padStart(64,'0')}` as Hex,
@@ -301,6 +304,53 @@ describe('governed synthetic resolution and exactly-once redemption',()=>{
     const prepared=await post('finance',`/v1/admin/markets/${market.id}/settlement-batches`,{},'amm-settlement');
     expect(prepared.statusCode,prepared.body).toBe(201);
     expect(prepared.json()).toMatchObject({item_count:1,total_minor:'2000000'});
+  });
+
+  it('redeems a signed RFQ fill exactly once and exposes its winning settlement claim',async()=>{
+    clockNow=new Date();const market=await createMarket();
+    const requesterEntity=randomUUID(),dealerEntity=randomUUID();
+    for(const [id,name] of [[requesterEntity,'Resolution RFQ Requester'],[dealerEntity,'Resolution RFQ Dealer']])
+      await db.query(`INSERT INTO rfq_entities(id,legal_name,status,exposure_limit_minor,created_by,approved_by,approved_at)
+        VALUES($1,$2,'active',10000000,$3,$4,now())`,[id,name,identities.compliance,identities.other_compliance]);
+    await db.query(`INSERT INTO rfq_entity_memberships(entity_id,account_id,role,added_by)
+      VALUES($1,$2,'requester',$3)`,[requesterEntity,identities.trader,identities.other_compliance]);
+    await db.query(`INSERT INTO rfq_entity_memberships(entity_id,account_id,role,signing_public_key,
+      signing_key_fingerprint,added_by) VALUES($1,$2,'dealer',$3,$4,$5)`,
+    [dealerEntity,identities.proposer,rfqPublicKey,signingKeyFingerprint(rfqPublicKey),identities.other_compliance]);
+    const requestExpiry=new Date(Date.now()+120_000).toISOString();
+    const request=await post('trader',`/v1/markets/${market.id}/rfqs`,{entity_id:requesterEntity,
+      outcome_id:'yes',side:'buy',quantity:'1',expires_at:requestExpiry});
+    expect(request.statusCode,request.body).toBe(201);
+    const quoteExpiry=new Date(Date.now()+60_000).toISOString(),nonce='resolution-rfq-quote';
+    const payload=rfqSigningPayload({requestId:request.json().id,price:'500000',expiresAt:quoteExpiry,nonce});
+    const quote=await post('proposer',`/v1/rfqs/${request.json().id}/quotes`,{dealer_entity_id:dealerEntity,
+      price:'500000',expires_at:quoteExpiry,nonce,signature:sign(null,Buffer.from(payload),rfqKey.privateKey).toString('base64')});
+    expect(quote.statusCode,quote.body).toBe(201);
+    const fill=await post('trader',`/v1/rfqs/${request.json().id}/quotes/${quote.json().id}/accept`,{});
+    expect(fill.statusCode,fill.body).toBe(200);
+    await close(market.id,market.policy);
+    const proof=await evidence(market.id,'resolution_proposer','f'.repeat(64));
+    expect((await post('resolution_proposer',`/v1/admin/markets/${market.id}/resolution/proposal`,{
+      result:{kind:'outcome',outcome_id:'yes'},evidence_id:proof.json().id,reason:'Observed RFQ market result'})).statusCode).toBe(201);
+    clockNow=new Date(clockNow.getTime()+61_000);
+    for(const who of ['resolution','resolution_judge_two','resolution_judge_three'])
+      expect((await vote(market.id,who,'proposal',proof.json().id)).statusCode).toBe(201);
+    clockNow=new Date(clockNow.getTime()+120_000);
+    expect((await post('resolution_finalizer',`/v1/admin/markets/${market.id}/resolution/finalize`,
+      {reason:'Independent quorum selected documented result'})).statusCode).toBe(200);
+    const before=await balance('trader','user_available');
+    const [first,second]=await Promise.all([
+      post('finance',`/v1/admin/markets/${market.id}/resolution/redeem-batch`,{},'rfq-redeem-one'),
+      post('finance',`/v1/admin/markets/${market.id}/resolution/redeem-batch`,{},'rfq-redeem-two')]);
+    expect([first.json().fill_count,second.json().fill_count].sort()).toEqual([0,1]);
+    expect(await balance('trader','user_available')).toBe(before+1_000_000n);
+    expect((await get('trader',`/v1/markets/${market.id}/positions`)).json().items).toEqual([]);
+    expect((await get('trader',`/v1/markets/${market.id}/redemptions`)).json().items).toMatchObject([
+      {fill_id:fill.json().id,amount_minor:'1000000'}]);
+    const prepared=await post('finance',`/v1/admin/markets/${market.id}/settlement-batches`,{},'rfq-settlement');
+    expect(prepared.statusCode,prepared.body).toBe(201);
+    expect(prepared.json()).toMatchObject({item_count:1,total_minor:'1000000'});
+    await expect(db.query('DELETE FROM rfq_redemptions WHERE fill_id=$1',[fill.json().id])).rejects.toThrow();
   });
 
   it('prepares one deterministic chain claim, verifies quorum and detects later divergence',async()=>{
