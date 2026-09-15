@@ -36,8 +36,8 @@ export const publicCase=(row:CaseRow)=>({market_id:row.market_id,state:row.state
   finalized_at:row.finalized_at?iso(row.finalized_at):null});
 
 async function book(sql:Sql,marketId:string) {
-  return (await sql.query<{asset_code:string;status:string;next_sequence:string}>(
-    'SELECT asset_code,status,next_sequence FROM clob_markets WHERE market_id=$1 FOR UPDATE',[marketId])).rows[0];
+  return (await sql.query<{asset_code:string;contract_unit_minor:string;status:string;next_sequence:string}>(
+    'SELECT asset_code,contract_unit_minor::text,status,next_sequence FROM clob_markets WHERE market_id=$1 FOR UPDATE',[marketId])).rows[0];
 }
 async function marketEvent(sql:Sql,marketId:string,type:string,orderId:string|null=null) {
   const row=(await sql.query<{sequence:string}>(`UPDATE clob_markets SET next_sequence=next_sequence+1,
@@ -289,7 +289,7 @@ export async function redeemBatch(sql:Sql,actor:Account,marketId:string,request:
     const buyerId=fill.maker_side==='buy'?fill.maker_owner:fill.taker_owner;
     const sellerId=fill.maker_side==='sell'?fill.maker_owner:fill.taker_owner;
     for(const owner of [buyerId,sellerId].sort())await lockOwnerAsset(sql,owner,state.asset_code);
-    const payout=payoutForFill(market.terms,row.final_result,fill);
+    const payout=payoutForFill(market.terms,row.final_result,fill,BigInt(state.contract_unit_minor));
     const buyer=await ledgerAccount(sql,buyerId,state.asset_code,'user_available');
     const seller=await ledgerAccount(sql,sellerId,state.asset_code,'user_available');
     const journal=await postJournal(sql,{effectId:`resolution:${marketId}:fill:${fill.id}`,
@@ -307,7 +307,7 @@ export async function redeemBatch(sql:Sql,actor:Account,marketId:string,request:
   const treasury=await ledgerAccount(sql,null,state.asset_code,'liquidity_reserve');
   for(const fill of ammFills){
     await lockOwnerAsset(sql,fill.owner_id,state.asset_code);
-    const payout=payoutForFill(market.terms,row.final_result,fill);
+    const payout=payoutForFill(market.terms,row.final_result,fill,BigInt(state.contract_unit_minor));
     const userPayout=fill.side==='buy'?payout.buyer:payout.seller;
     const treasuryPayout=fill.side==='buy'?payout.seller:payout.buyer;
     const owner=await ledgerAccount(sql,fill.owner_id,state.asset_code,'user_available');
@@ -327,7 +327,7 @@ export async function redeemBatch(sql:Sql,actor:Account,marketId:string,request:
     const buyerId=fill.requester_side==='buy'?fill.requester_owner_id:fill.dealer_owner_id;
     const sellerId=fill.requester_side==='sell'?fill.requester_owner_id:fill.dealer_owner_id;
     for(const ownerId of [buyerId,sellerId].sort())await lockOwnerAsset(sql,ownerId,state.asset_code);
-    const payout=payoutForFill(market.terms,row.final_result,fill);
+    const payout=payoutForFill(market.terms,row.final_result,fill,BigInt(state.contract_unit_minor));
     const buyer=await ledgerAccount(sql,buyerId,state.asset_code,'user_available');
     const seller=await ledgerAccount(sql,sellerId,state.asset_code,'user_available');
     const journal=await postJournal(sql,{effectId:`resolution:${marketId}:rfq:${fill.id}`,

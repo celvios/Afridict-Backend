@@ -55,7 +55,7 @@ async function createMarket(type:'binary'|'categorical'='binary',amm=false){
     subsidy_limit_minor:'10000000',loss_limit_minor:'8000000',max_slippage_bps:500};
   await db.query(`INSERT INTO markets(id,creator_id,state,terms,policy_hash,published_at)
     VALUES ($1,$2,'scheduled',$3,$4,now())`,[id,identities.creator,JSON.stringify(policy),hash(policy)]);
-  expect((await post('approver',`/v1/admin/markets/${id}/trading/activate`,{asset_code:'DEMO'})).statusCode).toBe(200);
+  expect((await post('approver',`/v1/admin/markets/${id}/trading/activate`,{})).statusCode).toBe(200);
   return {id,policy};
 }
 async function trade(marketId:string,outcome:string,quantity='2'){
@@ -268,7 +268,7 @@ describe('governed synthetic resolution and exactly-once redemption',()=>{
     clockNow=new Date();
     const market=await createMarket('binary',true);
     expect((await post('approver',`/v1/admin/markets/${market.id}/amm/yes/activate`,
-      {asset_code:'DEMO',impact_bps:100})).statusCode).toBe(200);
+      {impact_bps:100})).statusCode).toBe(200);
     expect((await post('finance',`/v1/admin/markets/${market.id}/amm/yes/funding`,
       {amount_minor:'8000000'})).statusCode).toBe(200);
     const observed=new Date();

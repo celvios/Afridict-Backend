@@ -2507,11 +2507,13 @@
       },
       "ClobOrder": {
         "additionalProperties": false,
-        "description": "Integer share limit order. One matched share is backed by 1,000,000 collateral minor units. Buy funds the selected outcome; sell funds its complement. Both require collateral before admission.",
+        "description": "Integer share limit order. contract_unit_minor defines one share payout in the governed market asset. Price uses a fixed 1,000,000 probability scale. Both sides require the selected asset before admission.",
         "type": "object",
         "required": [
           "id",
           "market_id",
+          "asset_code",
+          "contract_unit_minor",
           "outcome_id",
           "side",
           "limit_price",
@@ -2531,6 +2533,16 @@
           "market_id": {
             "format": "uuid",
             "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "pattern": "^[A-Z0-9_]{2,32}$",
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "outcome_id": {
@@ -2594,6 +2606,8 @@
         "required": [
           "id",
           "market_id",
+          "asset_code",
+          "contract_unit_minor",
           "maker_order_id",
           "taker_order_id",
           "outcome_id",
@@ -2611,6 +2625,16 @@
           "market_id": {
             "format": "uuid",
             "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "pattern": "^[A-Z0-9_]{2,32}$",
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "maker_order_id": {
@@ -2657,6 +2681,8 @@
         "type": "object",
         "required": [
           "market_id",
+          "asset_code",
+          "contract_unit_minor",
           "outcome_id",
           "side",
           "quantity",
@@ -2667,6 +2693,16 @@
           "market_id": {
             "format": "uuid",
             "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "pattern": "^[A-Z0-9_]{2,32}$",
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "outcome_id": {
@@ -2706,6 +2742,10 @@
         "required": [
           "market_id",
           "outcome_id",
+          "asset_code",
+          "asset_scale",
+          "contract_unit_minor",
+          "price_scale",
           "status",
           "sequence",
           "bids",
@@ -2718,6 +2758,48 @@
             "type": "string"
           },
           "outcome_id": {
+            "type": "string"
+          },
+          "asset_code": {
+            "anyOf": [
+              {
+                "pattern": "^[A-Z0-9_]{2,32}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "asset_scale": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "maximum": 36,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "contract_unit_minor": {
+            "anyOf": [
+              {
+                "pattern": "^(0|[1-9][0-9]*)$",
+                "maxLength": 78,
+                "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price_scale": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "status": {
@@ -2791,6 +2873,9 @@
         "required": [
           "market_id",
           "asset_code",
+          "asset_scale",
+          "contract_unit_minor",
+          "price_scale",
           "status",
           "sequence"
         ],
@@ -2801,6 +2886,23 @@
             "type": "string"
           },
           "asset_code": {
+            "type": "string"
+          },
+          "asset_scale": {
+            "minimum": 0,
+            "maximum": 36,
+            "type": "integer"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "price_scale": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "status": {
@@ -2814,6 +2916,129 @@
             "pattern": "^(0|[1-9][0-9]*)$",
             "maxLength": 78,
             "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          }
+        }
+      },
+      "MarketCollateral": {
+        "additionalProperties": false,
+        "description": "The governed market asset and the caller wallet projection. conversion_sources identifies funded caller wallets with a current direct rate into this asset.",
+        "type": "object",
+        "required": [
+          "market_id",
+          "asset_code",
+          "asset_scale",
+          "contract_unit_minor",
+          "price_scale",
+          "trading_status",
+          "available_minor",
+          "reserved_minor",
+          "withdrawal_pending_minor",
+          "conversion_sources"
+        ],
+        "properties": {
+          "market_id": {
+            "format": "uuid",
+            "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "type": "string"
+          },
+          "asset_scale": {
+            "minimum": 0,
+            "maximum": 36,
+            "type": "integer"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "price_scale": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "trading_status": {
+            "enum": [
+              "open",
+              "halted"
+            ],
+            "type": "string"
+          },
+          "available_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "reserved_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "withdrawal_pending_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "conversion_sources": {
+            "type": "array",
+            "items": {
+              "pattern": "^[A-Z0-9_]{2,32}$",
+              "type": "string"
+            }
+          }
+        }
+      },
+      "MarketCollateralPolicy": {
+        "additionalProperties": false,
+        "description": "Public exact-unit collateral identity. It contains no caller balance or private financial data.",
+        "type": "object",
+        "required": [
+          "market_id",
+          "asset_code",
+          "asset_scale",
+          "contract_unit_minor",
+          "price_scale",
+          "trading_status"
+        ],
+        "properties": {
+          "market_id": {
+            "format": "uuid",
+            "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "type": "string"
+          },
+          "asset_scale": {
+            "minimum": 0,
+            "maximum": 36,
+            "type": "integer"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "price_scale": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
+            "type": "string"
+          },
+          "trading_status": {
+            "enum": [
+              "open",
+              "halted"
+            ],
             "type": "string"
           }
         }
@@ -3552,6 +3777,7 @@
           "market_id",
           "outcome_id",
           "asset_code",
+          "contract_unit_minor",
           "status",
           "inventory_limit",
           "subsidy_limit",
@@ -3574,6 +3800,12 @@
             "type": "string"
           },
           "asset_code": {
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "status": {
@@ -3714,6 +3946,8 @@
         "required": [
           "id",
           "market_id",
+          "asset_code",
+          "contract_unit_minor",
           "outcome_id",
           "side",
           "quantity",
@@ -3737,6 +3971,15 @@
           "market_id": {
             "format": "uuid",
             "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "outcome_id": {
@@ -3947,6 +4190,8 @@
           "id",
           "entity_id",
           "market_id",
+          "asset_code",
+          "contract_unit_minor",
           "outcome_id",
           "side",
           "quantity",
@@ -3970,6 +4215,15 @@
           "market_id": {
             "format": "uuid",
             "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "outcome_id": {
@@ -4033,6 +4287,8 @@
           "id",
           "request_id",
           "dealer_entity_id",
+          "asset_code",
+          "contract_unit_minor",
           "price",
           "expires_at",
           "nonce",
@@ -4057,6 +4313,15 @@
           "dealer_entity_id": {
             "format": "uuid",
             "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "price": {
@@ -4113,6 +4378,8 @@
           "request_id",
           "quote_id",
           "market_id",
+          "asset_code",
+          "contract_unit_minor",
           "outcome_id",
           "requester_side",
           "price",
@@ -4139,6 +4406,15 @@
           "market_id": {
             "format": "uuid",
             "description": "Opaque resource identifier.",
+            "type": "string"
+          },
+          "asset_code": {
+            "type": "string"
+          },
+          "contract_unit_minor": {
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "maxLength": 78,
+            "description": "Exact unsigned integer string, bounded to uint256 by domain validation. Never convert financial values through JavaScript Number.",
             "type": "string"
           },
           "outcome_id": {
@@ -24946,7 +25222,7 @@
         "tags": [
           "Liquidity"
         ],
-        "description": "Synthetic only. Copies immutable market liquidity limits into a per-outcome pool. Requires an approved synthetic collateral binding. Activation does not fund the treasury.",
+        "description": "Synthetic only. Copies the governed market asset, contract unit and immutable liquidity limits into a per-outcome pool. Activation does not fund the treasury.",
         "requestBody": {
           "required": true,
           "content": {
@@ -24955,15 +25231,9 @@
                 "additionalProperties": false,
                 "type": "object",
                 "required": [
-                  "asset_code",
                   "impact_bps"
                 ],
                 "properties": {
-                  "asset_code": {
-                    "minLength": 1,
-                    "maxLength": 32,
-                    "type": "string"
-                  },
                   "impact_bps": {
                     "minimum": 0,
                     "maximum": 10000,
@@ -26863,7 +27133,7 @@
         "tags": [
           "Trading"
         ],
-        "description": "Requires market_approver, a published market inside its trading window, every published jurisdiction enabled for trading and a registry-approved synthetic asset binding. Cannot reopen a halted book. Production trading remains disabled.",
+        "description": "Derives the asset and contract payout unit from the approved binding named by the published policy. The request cannot select a different wallet. A halted book cannot be reopened.",
         "requestBody": {
           "required": true,
           "content": {
@@ -26871,19 +27141,7 @@
               "schema": {
                 "additionalProperties": false,
                 "type": "object",
-                "required": [
-                  "asset_code"
-                ],
-                "properties": {
-                  "asset_code": {
-                    "minLength": 1,
-                    "maxLength": 32,
-                    "type": "string"
-                  }
-                }
-              },
-              "example": {
-                "asset_code": "DEMO"
+                "properties": {}
               }
             }
           }
@@ -26927,6 +27185,556 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ClobTradingState"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_FAILED or INVALID_CURSOR. Correct the request before retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED or INVALID_PARTNER_SIGNATURE. Obtain valid caller or partner authentication.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN, ACCOUNT_RESTRICTED, ONBOARDING_REQUIRED, SEPARATION_OF_DUTIES or COUNTRY_POLICY_BLOCKED. Do not retry without resolving authorization or policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND. Resource does not exist or is not visible to this caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency, workflow version, collateral, reservation, withdrawal or governance conflict. Refresh state; changed commands need a new idempotency key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "VALIDATION_FAILED. Request body exceeds the configured size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE. Use application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid amount, asset, journal, market policy, template, source or policy reference. Correct semantic input before retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED. Observe Retry-After and retry with the original command key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Minimum delay in seconds before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL_ERROR. Contact support with X-Request-Id; do not assume a command failed to commit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A configured provider returned an invalid or mismatched response. Do not continue with the returned data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency, identity, financial integration or partner adapter unavailable. Retry only transient failures with the same command key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Minimum delay in seconds before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/markets/{id}/collateral": {
+      "get": {
+        "operationId": "getMarketCollateral",
+        "summary": "Read the required market wallet",
+        "tags": [
+          "Trading"
+        ],
+        "description": "Returns the governed asset, precision, contract payout unit, probability price scale, trading state and caller balances. conversion_sources lists funded caller wallets with a current direct rate into the required asset.",
+        "parameters": [
+          {
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "Opaque resource identifier."
+          }
+        ],
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful result; see the operation description for what is committed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketCollateral"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "VALIDATION_FAILED or INVALID_CURSOR. Correct the request before retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "UNAUTHENTICATED or INVALID_PARTNER_SIGNATURE. Obtain valid caller or partner authentication.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "FORBIDDEN, ACCOUNT_RESTRICTED, ONBOARDING_REQUIRED, SEPARATION_OF_DUTIES or COUNTRY_POLICY_BLOCKED. Do not retry without resolving authorization or policy.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "NOT_FOUND. Resource does not exist or is not visible to this caller.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Idempotency, workflow version, collateral, reservation, withdrawal or governance conflict. Refresh state; changed commands need a new idempotency key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "VALIDATION_FAILED. Request body exceeds the configured size limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "UNSUPPORTED_MEDIA_TYPE. Use application/json.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid amount, asset, journal, market policy, template, source or policy reference. Correct semantic input before retrying.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "RATE_LIMITED. Observe Retry-After and retry with the original command key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Minimum delay in seconds before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "INTERNAL_ERROR. Contact support with X-Request-Id; do not assume a command failed to commit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "A configured provider returned an invalid or mismatched response. Do not continue with the returned data.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Dependency, identity, financial integration or partner adapter unavailable. Retry only transient failures with the same command key.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "headers": {
+              "X-Request-Id": {
+                "description": "Server-issued correlation identifier.",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Retry-After": {
+                "description": "Minimum delay in seconds before retrying.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/markets/{id}/collateral-policy": {
+      "get": {
+        "operationId": "getMarketCollateralPolicy",
+        "summary": "Read market collateral terms",
+        "tags": [
+          "Markets"
+        ],
+        "description": "Public exact-unit identity for the governed collateral asset, one-share payout and probability price scale. Contains no customer balance.",
+        "parameters": [
+          {
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "description": "Opaque resource identifier."
+          }
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Successful result; see the operation description for what is committed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarketCollateralPolicy"
                 }
               }
             },
@@ -28078,7 +28886,7 @@
         "tags": [
           "Trading"
         ],
-        "description": "Synthetic demo only. One integer share pays 1,000,000 collateral minor units under the published outcome policy. Buy funds the selected outcome; sell funds its complement. Both sides reserve worst-case price plus additive per-share fees. Resting price, then admission sequence, determines execution priority. Reuse the original idempotency key after a timeout.",
+        "description": "Synthetic demo only. One integer share pays the market contract_unit_minor in its governed asset; probability prices use a separate 1,000,000 scale. The engine automatically reserves the market asset and never substitutes another wallet. Both sides reserve worst-case collateral plus additive per-share fees. Reuse the original idempotency key after a timeout.",
         "requestBody": {
           "required": true,
           "content": {

@@ -21,6 +21,7 @@ export interface AmmRequest {
   quantity: bigint;
   referencePrice: bigint;
   limitPrice: bigint;
+  contractUnit?:bigint;
 }
 
 const ceilDiv = (value: bigint, divisor: bigint) => (value + divisor - 1n) / divisor;
@@ -59,10 +60,11 @@ export function previewAmmQuote(limits: AmmLimits, exposure: AmmExposure, reques
   if ((request.side === 'buy' && price > request.limitPrice) ||
     (request.side === 'sell' && price < request.limitPrice)) throw new Error('AMM price violates user limit');
 
-  const collateral = contractCollateral(request.quantity, price);
+  const contractUnit=request.contractUnit??PRICE_SCALE;
+  const collateral=contractCollateral(request.quantity,price,contractUnit);
   const userCollateral = request.side === 'buy' ? collateral.buyer : collateral.seller;
   const ammCollateral = request.side === 'buy' ? collateral.seller : collateral.buyer;
-  const fee = executionFee(request.side, request.quantity, price, limits.feeBps);
+  const fee=executionFee(request.side,request.quantity,price,limits.feeBps,contractUnit);
   const userTotal = userCollateral + fee;
   const nextSubsidy = exposure.subsidyCommitted + ammCollateral;
   const nextLoss = exposure.worstCaseLossCommitted + ammCollateral;

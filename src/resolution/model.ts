@@ -21,9 +21,9 @@ export function validateResult(terms:MarketTerms,result:ResolutionResult) {
 }
 
 export function payoutForFill(terms:MarketTerms,result:ResolutionResult,fill:{outcome_id:string;
-  quantity:string;buyer_collateral:string;seller_collateral:string}) {
+  quantity:string;buyer_collateral:string;seller_collateral:string},contractUnit:bigint=PRICE_SCALE) {
   validateResult(terms,result);
-  const quantity=integer(fill.quantity),total=quantity*PRICE_SCALE;
+  const quantity=integer(fill.quantity),total=quantity*contractUnit;
   if (result.kind==='invalid' || result.kind==='cancelled') {
     const buyer=integer(fill.buyer_collateral),seller=integer(fill.seller_collateral);
     if (buyer+seller!==total) throw new Error('Recorded collateral does not cover the fill');

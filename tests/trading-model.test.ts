@@ -26,6 +26,16 @@ describe('deterministic CLOB reference mathematics', () => {
     expect(chunks.reduce((a, b) => a + b, 0n)).toBe(buy.total);
   });
 
+  it('conserves payout units for NGN and 18-decimal USDT contracts',()=>{
+    for(const unit of [10_000n,10n**18n]){
+      const collateral=contractCollateral(3n,550_000n,unit);
+      expect(collateral.buyer+collateral.seller).toBe(3n*unit);
+      const buy=reservationRequired('buy',3n,550_000n,100n,unit);
+      expect(buy.collateral).toBe(collateral.buyer);expect(buy.fee).toBeGreaterThan(0n);
+    }
+    expect(()=>contractCollateral(1n,1n,10_000n)).toThrow('precision');
+  });
+
   it('matches best price first and preserves sequence at the same price', () => {
     const result = matchPriceTime('buy', 650_000n, 12n, [
       { id: 'later', side: 'sell', price: 600_000n, remaining: 5n, sequence: 3n },

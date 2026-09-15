@@ -42,8 +42,9 @@ import {approveCryptoWithdrawal,createCryptoWithdrawal,listCryptoReviews,listCry
   recordCryptoSubmission,type TokenAssetRow} from './funding/crypto.js';
 import {createConversionQuote,executeConversionQuote,fundConversionInventory,getConversionQuote,
   publishConversionRate} from './funding/conversion.js';
-import {BookSchema,FillSchema,MarketEventSchema,OrderSchema,PositionSchema,TradingStateSchema,tradingSchemas} from './trading/contracts.js';
-import {activateClob,cancelOrder,haltClob,listFills,listOrders,listPositions,marketEvents,orderBook,submitOrder} from './trading/service.js';
+import {BookSchema,FillSchema,MarketCollateralPolicySchema,MarketCollateralSchema,MarketEventSchema,OrderSchema,PositionSchema,TradingStateSchema,tradingSchemas} from './trading/contracts.js';
+import {activateClob,cancelOrder,haltClob,listFills,listOrders,listPositions,marketCollateral,marketCollateralPolicy,
+  marketEvents,orderBook,submitOrder} from './trading/service.js';
 import {ResolutionBallotSchema,ResolutionCaseSchema,ResolutionCloseSchema,ResolutionEvidenceSchema,
   ResolutionResultSchema,RedemptionBatchSchema,RedemptionSchema,resolutionSchemas} from './resolution/contracts.js';
 import {archiveEvidence,ballotResolution,challengeResolution,closeResolutionBook,finalizeResolution,
@@ -707,11 +708,10 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     {params:IdParams,command:true,body:object({})})},run([],async({sql,actor,request})=>{syntheticTrading();return {status:200,
       body:await cancelRfqRequest(sql,actor,id(request),request.id)};}));
   app.post('/v1/admin/markets/:id/amm/:outcome/activate',{schema:contract('activateSyntheticAmm','Liquidity',
-    'Activate a bounded AMM pool','Synthetic only. Copies immutable market liquidity limits into a per-outcome pool. Requires an approved synthetic collateral binding. Activation does not fund the treasury.',Type.Ref(AmmPoolSchema),
-    {params:bookParams,command:true,roles:['market_approver'],body:object({asset_code:Type.String({minLength:1,maxLength:32}),
-      impact_bps:Type.Integer({minimum:0,maximum:10000})})})},run(['market_approver'],async({sql,actor,request})=>{
-      syntheticTrading();const p=request.params as {id:string;outcome:string},b=request.body as {asset_code:string;impact_bps:number};
-      return {status:200,body:await activateAmm(sql,actor,p.id,p.outcome,b.asset_code,b.impact_bps)};
+    'Activate a bounded AMM pool','Synthetic only. Copies the governed market asset, contract unit and immutable liquidity limits into a per-outcome pool. Activation does not fund the treasury.',Type.Ref(AmmPoolSchema),
+    {params:bookParams,command:true,roles:['market_approver'],body:object({impact_bps:Type.Integer({minimum:0,maximum:10000})})})},run(['market_approver'],async({sql,actor,request})=>{
+      syntheticTrading();const p=request.params as {id:string;outcome:string},b=request.body as {impact_bps:number};
+      return {status:200,body:await activateAmm(sql,actor,p.id,p.outcome,b.impact_bps)};
     }));
   app.post('/v1/admin/markets/:id/amm/:outcome/funding',{schema:contract('fundSyntheticAmm','Liquidity',
     'Fund a bounded AMM treasury','Synthetic finance-only operation. Posts balanced custody and liquidity-reserve entries and cannot exceed the published subsidy limit.',Type.Ref(AmmFundingSchema),
@@ -742,14 +742,20 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     'List your AMM quotes','Returns the caller latest 100 quote states for this market.',object({items:Type.Array(Type.Ref(AmmQuoteSchema))}),{params:IdParams})},
     async request=>{const {a}=await authenticated(request);return listAmmQuotes(db,a.id,id(request));});
   app.post('/v1/admin/markets/:id/trading/activate',{schema:contract('activateSyntheticClob','Trading',
-    'Activate the governed synthetic order book','Requires market_approver, a published market inside its trading window, every published jurisdiction enabled for trading and a registry-approved synthetic asset binding. Cannot reopen a halted book. Production trading remains disabled.',
-    Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({
-      asset_code:Type.String({minLength:1,maxLength:32}),
-    },{examples:[{asset_code:'DEMO'}]})})},
+    'Activate the governed synthetic order book','Derives the asset and contract payout unit from the approved binding named by the published policy. The request cannot select a different wallet. A halted book cannot be reopened.',
+    Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({})})},
     run(['market_approver'],async({sql,actor,request})=>{
-      syntheticTrading();const result=await activateClob(sql,actor,id(request),(request.body as {asset_code:string}).asset_code,request.id);
+      syntheticTrading();const result=await activateClob(sql,actor,id(request),request.id);
       return {status:200,body:result};
     }));
+  app.get('/v1/markets/:id/collateral',{schema:contract('getMarketCollateral','Trading','Read the required market wallet',
+    'Returns the governed asset, precision, contract payout unit, probability price scale, trading state and caller balances. conversion_sources lists funded caller wallets with a current direct rate into the required asset.',
+    Type.Ref(MarketCollateralSchema),{params:IdParams})},async request=>{const {a}=await authenticated(request);
+      return marketCollateral(db,a.id,id(request));
+    });
+  app.get('/v1/markets/:id/collateral-policy',{schema:contract('getMarketCollateralPolicy','Markets','Read market collateral terms',
+    'Public exact-unit identity for the governed collateral asset, one-share payout and probability price scale. Contains no customer balance.',
+    Type.Ref(MarketCollateralPolicySchema),{params:IdParams,public:true})},request=>marketCollateralPolicy(db,id(request)));
   app.post('/v1/admin/markets/:id/trading/halt',{schema:contract('haltSyntheticClob','Trading',
     'Halt the synthetic order book','Halts admissions immediately. Existing orders can still be cancelled; reopening requires a future governed recovery workflow.',
     Type.Ref(TradingStateSchema),{params:IdParams,command:true,roles:['market_approver'],body:object({})})},
@@ -767,7 +773,7 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     {params:IdParams,public:true,querystring:object({after:Type.Optional(Uint)})})},
     async req=>marketEvents(db,id(req),(req.query as {after?:string}).after??'0'));
   app.post('/v1/markets/:id/orders',{schema:contract('submitSyntheticLimitOrder','Trading',
-    'Submit a fully collateralized limit order','Synthetic demo only. One integer share pays 1,000,000 collateral minor units under the published outcome policy. Buy funds the selected outcome; sell funds its complement. Both sides reserve worst-case price plus additive per-share fees. Resting price, then admission sequence, determines execution priority. Reuse the original idempotency key after a timeout.',
+    'Submit a fully collateralized limit order','Synthetic demo only. One integer share pays the market contract_unit_minor in its governed asset; probability prices use a separate 1,000,000 scale. The engine automatically reserves the market asset and never substitutes another wallet. Both sides reserve worst-case collateral plus additive per-share fees. Reuse the original idempotency key after a timeout.',
     object({order:Type.Ref(OrderSchema),fills:Type.Array(Type.Ref(FillSchema))}),{params:IdParams,command:true,status:201,
       body:object({outcome_id:Type.String({pattern:'^[a-z][a-z0-9_]{0,31}$'}),
         side:Type.String({enum:['buy','sell']}),limit_price:Uint,quantity:Uint},

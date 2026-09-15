@@ -70,7 +70,7 @@ function signature(requestId:string,price:string,expiresAt:string,nonce:string){
 
 describe('institutional RFQ API',()=>{
   it('onboards separated entities and authorizes requester and signed dealer accounts',async()=>{
-    expect((await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{asset_code:'DEMO'})).statusCode).toBe(200);
+    expect((await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{})).statusCode).toBe(200);
     requesterEntity=await entity('Synthetic Requester Limited');dealerEntity=await entity('Synthetic Dealer Limited');
     expect((await post('other_compliance',`/v1/admin/rfq/entities/${requesterEntity}/members`,{
       account_id:ids.trader,role:'requester'})).statusCode).toBe(201);
@@ -141,7 +141,7 @@ describe('institutional RFQ API',()=>{
 
   it('serializes CLOB, AMM, RFQ and withdrawal admission for one shared balance',async()=>{
     expect((await post('approver',`/v1/admin/markets/${marketId}/amm/no/activate`,
-      {asset_code:'DEMO',impact_bps:100})).statusCode).toBe(200);
+      {impact_bps:100})).statusCode).toBe(200);
     expect((await post('finance',`/v1/admin/markets/${marketId}/amm/no/funding`,
       {amount_minor:'8000000'})).statusCode).toBe(200);
     const observed=Date.now();

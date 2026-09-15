@@ -73,7 +73,7 @@ export async function createTradingDemo(): Promise<{ app: FastifyInstance; db: D
     if (Date.now() < opening) await new Promise(resolve => setTimeout(resolve, opening - Date.now()));
     for (const [index, marketId] of marketIds.entries()) {
       const outcomeId = policies[index]!.outcomes[0]!.id;
-      await send('approver', `/v1/admin/markets/${marketId}/trading/activate`, { asset_code: 'DEMO' });
+      await send('approver', `/v1/admin/markets/${marketId}/trading/activate`, {});
       await send('proposer', `/v1/markets/${marketId}/orders`,
         { outcome_id: outcomeId, side: 'sell', limit_price: '600000', quantity: '3' });
       await send('trader', `/v1/markets/${marketId}/orders`,

@@ -70,6 +70,8 @@ export async function createConversionQuote(sql:Sql,owner:string,input:{sourceAs
   sourceAmountMinor:string},now=new Date()) {
   requireCondition(supportedPair(input.sourceAsset,input.destinationAsset),422,'CONVERSION_PAIR_UNSUPPORTED','Only NGN and USDT on BNB Smart Chain may be converted.');
   const amount=integer(input.sourceAmountMinor);requireCondition(amount>0n,422,'INVALID_AMOUNT','Conversion amount must be positive.');
+  const token=(await sql.query<{approved:boolean}>("SELECT approved FROM token_asset_registry WHERE asset_code='USDT_BSC' FOR SHARE")).rows[0];
+  requireCondition(token?.approved,422,'CONVERSION_ASSET_NOT_APPROVED','The exact USDT token contract and network must be approved.');
   const rate=(await sql.query<RateRow>(`SELECT r.* FROM conversion_rate_snapshots r
     JOIN financial_assets s ON s.code=r.source_asset JOIN financial_assets d ON d.code=r.destination_asset
     WHERE r.source_asset=$1 AND r.destination_asset=$2 AND r.expires_at>$3 AND s.approved=true AND d.approved=true
