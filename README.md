@@ -52,6 +52,8 @@ npm audit --omit=dev --audit-level=high
 
 Financial amounts cross APIs as exact integer strings. Clients must reuse the same idempotency key and body when retry behavior permits it, treat pending/uncertain states explicitly, and never infer settlement from a webhook or transaction hash.
 
+The wallet conversion API quotes direct NGN/USDT exchanges for 30 seconds and executes them atomically against ring-fenced treasury inventory. NGN uses kobo; `USDT_BSC` identifies USDT on BNB Smart Chain with 18 decimals. Both single-asset journals link to one immutable trade. The token, rates, inventory recognition and real-money financial mode remain approval-gated.
+
 The synthetic liquidity API includes role-gated AMM activation, finance-controlled treasury funding,
 approved reference prices, 15-second user quotes, atomic execution, position reporting, governed
 redemption, and testnet settlement claims. Institutional RFQs add maker-checker entity approval,

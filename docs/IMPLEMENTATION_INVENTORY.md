@@ -17,12 +17,12 @@ Reviewed 15 September 2026 against merged backend implementation. No frontend di
 | SendGrid | NOT STARTED | Transactional email port only; adapter, outbox worker, domain authentication and event processing absent |
 | Persona | NOT STARTED | Normalized interface only; adapter, inquiry/session, signed webhooks and ordering absent |
 | Capability model | PARTIAL | Fail-closed action decisions exist; production action gates and policy registries remain |
-| Wallet architecture | PARTIAL | Ledger buckets and projections exist for generic assets; required NGN/USD separation absent |
+| Wallet architecture | PARTIAL | NGN and exact `USDT_BSC` balances remain separate; direct conversion uses immutable quotes and two linked single-asset journals; normalized transaction history remains |
 | Double-entry ledger | COMPLETE | Balanced append-only journals, exact integer amounts and mutation guards are tested; production accounting approval remains a gate |
-| NGN wallet / USD wallet | NOT STARTED | No authoritative currency-specific accounts or projections |
-| SwervPay | NOT STARTED | No adapter or validated provider contract |
-| NGN deposits / withdrawals | NOT STARTED | Existing workflows are explicitly synthetic generic collateral flows |
-| Bank resolution / payment methods | NOT STARTED | No domain model or API |
+| NGN wallet / USD wallet | PARTIAL | NGN kobo and USDT-BSC token units are independently accounted; frontend may label USDT as USD (USDT); production custody and activation remain |
+| SwervPay | PARTIAL | Typed sandbox adapter, one-time NGN collection instructions, account resolution and guarded payouts exist; commercial terms, webhook identity and independent reconciliation remain |
+| NGN deposits / withdrawals | PARTIAL | NGN 200 minimum collection intents and administrator-reviewed payout state machine exist; production provider approval and settlement reconciliation remain |
+| Bank resolution / payment methods | PARTIAL | Ephemeral bank resolution and encrypted-at-rest payout details exist; reusable accounts and production validation remain |
 | Markets | PARTIAL | Generalized definitions, governance, evidence policy and publication exist; opening/trading lifecycle absent |
 | CLOB / orderbook | COMPLETE (SYNTHETIC) | Deterministic price-time matching, partial fills, cancellation, sequence recovery, fees, halts and concurrency tests |
 | AMM | COMPLETE (SYNTHETIC) | Governed treasury, bounded exact quotes, exposure/loss/slippage controls, atomic execution, redemption and settlement |
@@ -31,10 +31,10 @@ Reviewed 15 September 2026 against merged backend implementation. No frontend di
 | Positions / portfolio | PARTIAL | Unsettled CLOB, AMM and RFQ positions are derived from immutable fills; production valuation remains absent |
 | Settlement | PARTIAL | Governed redemptions and deterministic Robinhood Chain testnet claim batches exist; production deployment remains absent |
 | Robinhood Chain | PARTIAL | Smart-account and finality observation schemas exist; RPC, signing, indexing and reorg adapters absent |
-| Crypto deposits / withdrawals | PARTIAL | Synthetic generic workflows only; real chain rails absent |
+| Crypto deposits / withdrawals | PARTIAL | Exact token registry and manual finance-reviewed BEP-20 withdrawal workflow exist; deposit address observation, independent finality and production custody remain |
 | Realtime | COMPLETE (SYNTHETIC) | One-use browser authentication, ordered market replay, book and private position snapshots, cursor recovery, bounded backpressure and AsyncAPI contract |
 | Notifications | NOT STARTED | Transactional outbox primitive exists; no delivery workers/providers |
-| Transaction history | PARTIAL | User ledger statement endpoint exists; normalized cross-domain transaction model absent |
+| Transaction history | PARTIAL | User ledger statement endpoint includes linked conversion journals; normalized cross-domain transaction model remains |
 | Admin | PARTIAL | Market/compliance governance and audit endpoints exist; finance/resolution/operations consoles incomplete |
 | Reconciliation | PARTIAL | Stored ledger/partner/chain comparison and exceptions exist; independent provider/chain sources absent |
 | Audit logging | COMPLETE | Append-only attributable audit and outbox records cover implemented privileged workflows |

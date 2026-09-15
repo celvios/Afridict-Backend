@@ -4,7 +4,8 @@ import { requireCondition } from '../platform/errors.js';
 import { integer, validateJournal, type Posting } from './model.js';
 
 export type Bucket = 'escrow_asset' | 'user_available' | 'user_reserved' |
-  'user_withdrawal_pending' | 'protocol_fee' | 'reconciliation_suspense' | 'market_escrow' | 'liquidity_reserve';
+  'user_withdrawal_pending' | 'protocol_fee' | 'reconciliation_suspense' | 'market_escrow' | 'liquidity_reserve' |
+  'conversion_inventory';
 export interface LedgerAccount {
   id: string; owner_id: string | null; asset_code: string; bucket: Bucket; normal_side: 'debit' | 'credit';
 }

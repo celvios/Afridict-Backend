@@ -17,7 +17,7 @@ export function publicFiatDeposit(row:Row) {return {id:row.intent_id,currency:ro
     bank_code:row.bank_code!,bank_name:row.bank_name!,provider:'swervpay' as const}:null};}
 
 export async function createFiatDeposit(sql:Sql,input:{owner:string;currency:FiatCurrency;targetMinor:string},requestId:string) {
-  const amount=integer(input.targetMinor);requireCondition(amount>0n,422,'INVALID_AMOUNT','Deposit amount must be positive.');
+  const amount=integer(input.targetMinor);requireCondition(amount>=20_000n,422,'DEPOSIT_MINIMUM_NOT_MET','The minimum NGN deposit is 20,000 kobo (NGN 200).');
   const rail=(await sql.query<{approved:boolean;collections_enabled:boolean}>(`SELECT r.approved,r.collections_enabled FROM fiat_rail_registry r
     JOIN financial_assets f ON f.code=r.asset_code WHERE r.provider='swervpay' AND r.asset_code=$1 AND f.approved=true FOR SHARE`,[input.currency])).rows[0];
   requireCondition(rail?.approved&&rail.collections_enabled,503,'FIAT_RAIL_NOT_APPROVED','The selected currency collection rail is not approved.');

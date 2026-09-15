@@ -27,6 +27,7 @@ flowchart LR
 | Identity-document status | Afridict normalized state backed by Persona |
 | Operational workflows | PostgreSQL state machines |
 | Off-chain money | Append-only Afridict double-entry ledger |
+| Wallet conversion terms | Append-only finance rate snapshot copied into an immutable customer quote |
 | Orders and matches | Deterministic synthetic CLOB journal |
 | External NGN payment state | Reconciled Swervpay records and finance decisions |
 | Final collateral and outcome ownership | Finalized Robinhood Chain state |
@@ -37,6 +38,8 @@ Read models, caches, partner webhooks, RPC responses, indexers, and transaction 
 ## Security and integrity
 
 All financial values use explicit assets and integer minor units. Journals balance per asset and remain append-only. One owner/asset lock serializes reservations across withdrawals and future CLOB, AMM, and RFQ paths. Commands use idempotency records, privileged actions produce audit and outbox events, and production runs with a restricted database role.
+
+NGN/USDT conversion uses two balanced journals linked by one trade because assets with different units cannot balance in one journal. Deterministically ordered locks cover both customer balances and both ring-fenced treasury inventories. Quote creation does not reserve funds; acceptance rechecks expiry, the source balance and destination inventory in one transaction. See [ADR 0012](adr/0012-ring-fenced-wallet-conversion.md).
 
 Realtime delivery reads the canonical append-only market sequence rather than creating a second trading state. Browser clients exchange their bearer-authenticated HTTP session for a one-use ticket, authenticate the WebSocket in its first frame, and resume after the last contiguous sequence they applied. Market events contain no customer identity; order-book snapshots contain aggregate depth, while position snapshots are scoped to the ticket owner. Slow connections are closed with a recovery cursor instead of accumulating an unbounded queue.
 
