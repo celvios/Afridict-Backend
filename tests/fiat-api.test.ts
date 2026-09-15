@@ -47,6 +47,12 @@ describe('fiat provider API boundary',()=>{
       payload:{bank_code:'999',account_number:'123'}});
     expect(response.statusCode).toBe(400);expect(vi.mocked(provider.resolveAccount).mock.calls).toHaveLength(calls);
   });
+  it('enforces the NGN 200 deposit minimum before creating provider work',async()=>{
+    const response=await app.inject({method:'POST',url:'/v1/fiat/deposit-intents',headers:{...auth,'idempotency-key':'fiat-minimum'},
+      payload:{currency:'NGN',target_minor:'19999'}});
+    expect(response.statusCode,response.body).toBe(400);expect(response.json().code).toBe('VALIDATION_FAILED');
+    expect((await db.query<{count:string}>('SELECT count(*)::text AS count FROM fiat_collection_requests')).rows[0]!.count).toBe('0');
+  });
   it('creates an idempotent pending deposit and exposes instructions only after one worker call',async()=>{
     vi.mocked(provider.createCollection).mockImplementation(async input=>({id:`collection_${input.reference}`,reference:input.reference,
       currency:input.currency,accountName:'Afridict Collections',accountNumber:'1111111111',bankCode:'999',bankName:'Synthetic Bank',status:'active'}));
@@ -64,7 +70,7 @@ describe('fiat provider API boundary',()=>{
   it('holds an ambiguous collection result for reconciliation without retrying',async()=>{
     vi.mocked(provider.createCollection).mockRejectedValueOnce(new Error('provider connection closed'));
     const created=await app.inject({method:'POST',url:'/v1/fiat/deposit-intents',headers:{...auth,'idempotency-key':'fiat-deposit-uncertain'},
-      payload:{currency:'NGN',target_minor:'5000'}}),id=created.json<{id:string}>().id;
+      payload:{currency:'NGN',target_minor:'20000'}}),id=created.json<{id:string}>().id;
     const before=vi.mocked(provider.createCollection).mock.calls.length;
     await expect(processFiatCollection(db,provider,id)).rejects.toThrow('provider connection closed');
     expect(await processFiatCollection(db,provider,id)).toBe('instruction_uncertain');

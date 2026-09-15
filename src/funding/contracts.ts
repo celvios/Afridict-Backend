@@ -40,6 +40,17 @@ export const AdminCryptoWithdrawalSchema=object({id:UUID,asset:Type.String(),amo
   token_contract:Type.String({pattern:'^0x[a-f0-9]{40}$'}),approved_by:Type.Union([UUID,Type.Null()]),approved_at:Type.Union([Timestamp,Type.Null()]),
   transaction_hash:Type.Union([Type.String({pattern:'^0x[a-f0-9]{64}$'}),Type.Null()])},
   {$id:'AdminCryptoWithdrawal',description:'Finance review and manual company-wallet submission record. A transaction hash is evidence of submission, not final settlement.'});
+export const ConversionRateSchema=object({id:UUID,source_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),
+  destination_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),rate_numerator:Uint,rate_denominator:Uint,
+  fee_bps:Type.Integer({minimum:0,maximum:1000}),minimum_source_minor:Uint,source_ref:text('Finance-approved rate evidence.',300),
+  expires_at:Timestamp,created_at:Timestamp},{$id:'ConversionRate',description:'Append-only rational rate snapshot. destination minor units = floor((source minor units - fee) × numerator ÷ denominator).'});
+export const ConversionQuoteSchema=object({id:UUID,source_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),
+  destination_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),source_amount_minor:Uint,fee_minor:Uint,
+  destination_amount_minor:Uint,rate_numerator:Uint,rate_denominator:Uint,state:Type.String({enum:['quoted','executed']}),
+  expires_at:Timestamp,created_at:Timestamp,executed_at:Type.Union([Timestamp,Type.Null()]),trade_id:Type.Optional(UUID)},
+  {$id:'ConversionQuote',description:'Immutable 30-second wallet conversion quote. Accepting it atomically moves both exact assets through ring-fenced treasury inventory.'});
+export const ConversionInventoryFundingSchema=object({journal_id:UUID,asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),amount_minor:Uint},
+  {$id:'ConversionInventoryFunding',description:'Audited recognition of externally safeguarded conversion inventory.'});
 export const ReconciliationSchema=object({id:UUID,asset:Type.String(),status:Type.String({enum:['balanced','exceptions_opened']}),
   escrow_ledger_minor:Uint,chain_net_minor:Type.String({pattern:'^-?(0|[1-9][0-9]*)$'}),
   partner_deposits_minor:Uint,finalized_deposits_minor:Uint,user_claims_minor:Uint,
@@ -55,4 +66,4 @@ export const SmartAccountSchema=object({chain_id:Uint,address:Type.String({patte
   {$id:'SmartAccount',description:'The caller own embedded account metadata. No session keys or recovery secrets are exposed.'});
 export const financialSchemas=[FinancialAssetSchema,BalanceSchema,FiatWalletSchema,BankSchema,ResolvedBankAccountSchema,
   FiatDepositSchema,DepositSchema,WithdrawalSchema,AdminNgnPayoutSchema,TokenAssetSchema,AdminCryptoWithdrawalSchema,
-  ReconciliationSchema,StatementSchema,SmartAccountSchema];
+  ConversionRateSchema,ConversionQuoteSchema,ConversionInventoryFundingSchema,ReconciliationSchema,StatementSchema,SmartAccountSchema];

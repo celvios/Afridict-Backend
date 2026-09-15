@@ -25,7 +25,8 @@ import { approvedTemplate, approvedReferences, createDraft, editDraft, getMarket
 import { validateTerms } from './markets/domain.js';
 import { financialSchemas, FinancialAssetSchema, BalanceSchema, DepositSchema, WithdrawalSchema,
   ReconciliationSchema, StatementSchema, SmartAccountSchema,FiatWalletSchema,BankSchema,ResolvedBankAccountSchema,
-  FiatDepositSchema,AdminNgnPayoutSchema,TokenAssetSchema,AdminCryptoWithdrawalSchema } from './funding/contracts.js';
+  FiatDepositSchema,AdminNgnPayoutSchema,TokenAssetSchema,AdminCryptoWithdrawalSchema,ConversionInventoryFundingSchema,
+  ConversionQuoteSchema,ConversionRateSchema } from './funding/contracts.js';
 import { applyPartnerDeposit, createDepositIntent, createWithdrawal, cancelWithdrawal, finalizeDeposit,
   finalizeWithdrawal, markWithdrawalUncertain, publicDeposit, publicWithdrawal, submitWithdrawal,
   type PartnerVerifier } from './funding/service.js';
@@ -39,6 +40,8 @@ import type { FiatDependencies } from './funding/swervpay.js';
 import {approveNgnPayout,completeNgnPayout,createFiatDeposit,getFiatDeposit,listNgnPayouts,requestNgnWithdrawal} from './funding/fiat.js';
 import {approveCryptoWithdrawal,createCryptoWithdrawal,listCryptoReviews,listCryptoWithdrawals,publicTokenAsset,
   recordCryptoSubmission,type TokenAssetRow} from './funding/crypto.js';
+import {createConversionQuote,executeConversionQuote,fundConversionInventory,getConversionQuote,
+  publishConversionRate} from './funding/conversion.js';
 import {BookSchema,FillSchema,MarketEventSchema,OrderSchema,PositionSchema,TradingStateSchema,tradingSchemas} from './trading/contracts.js';
 import {activateClob,cancelOrder,haltClob,listFills,listOrders,listPositions,marketEvents,orderBook,submitOrder} from './trading/service.js';
 import {ResolutionBallotSchema,ResolutionCaseSchema,ResolutionCloseSchema,ResolutionEvidenceSchema,
@@ -381,9 +384,10 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
       requireCondition(resolved.bankCode===body.bank_code&&resolved.accountNumber===body.account_number,502,'FIAT_PROVIDER_RESPONSE_MISMATCH','The provider returned a different bank account.');
       return {account_name:resolved.accountName,account_number:resolved.accountNumber,bank_code:resolved.bankCode,bank_name:resolved.bankName};
     });
-  app.post('/v1/fiat/deposit-intents',{schema:contract('createFiatDepositIntent','Funding','Request NGN or USD deposit instructions',
-    'Commits a local NGN intent and queues provider work. A 202 response does not contain payment instructions and proves no provider account was created. Poll the returned resource; only instructions_available may be shown as payable. instruction_uncertain requires operator reconciliation.',
-    Type.Ref(FiatDepositSchema),{command:true,status:202,body:object({currency:Type.Literal('NGN'),target_minor:Uint})})},
+  app.post('/v1/fiat/deposit-intents',{schema:contract('createFiatDepositIntent','Funding','Request NGN deposit instructions',
+    'Commits a local NGN intent of at least 20,000 kobo (NGN 200) and queues provider work. A 202 response does not contain payment instructions and proves no provider account was created. Poll the returned resource; only instructions_available may be shown as payable. instruction_uncertain requires operator reconciliation.',
+    Type.Ref(FiatDepositSchema),{command:true,status:202,body:object({currency:Type.Literal('NGN'),target_minor:Type.String({
+      pattern:'^(?:[2-9][0-9]{4}|[1-9][0-9]{5,})$',description:'Requested amount in kobo; minimum 20,000 (NGN 200).',examples:['20000']})})})},
   run([],async({sql,actor,request})=>{
     requireCondition(fiatDependencies,503,'FIAT_PROVIDER_UNAVAILABLE','The fiat provider sandbox is not configured.');
     const assurance=await accountAssurance(sql,actor);requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
@@ -463,6 +467,49 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     Type.Ref(WithdrawalSchema),{params:IdParams,command:true,roles:['finance_operator'],body:object({transaction_hash:Type.String({pattern:'^0x[a-fA-F0-9]{64}$'})})})},
   run(['finance_operator'],async({sql,actor,request})=>({status:200,body:await recordCryptoSubmission(sql,id(request),actor.id,
     (request.body as {transaction_hash:string}).transaction_hash,request.id)})));
+  app.post('/v1/admin/wallet-conversion/rates',{schema:contract('publishWalletConversionRate','Finance','Publish an expiring NGN/USDT rate snapshot',
+    'Stores an append-only rational rate and fee approved by finance. SwervPay FX may inform source_ref, but this endpoint does not claim that SwervPay executes the conversion. Both assets must already be approved.',
+    Type.Ref(ConversionRateSchema),{status:201,command:true,roles:['finance_operator'],body:object({
+      source_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),destination_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),
+      rate_numerator:Uint,rate_denominator:Uint,fee_bps:Type.Integer({minimum:0,maximum:1000}),minimum_source_minor:Uint,
+      source_ref:text('Approved rate source or provider quote reference.',300),expires_at:Timestamp,reason:Reason})})},
+  run(['finance_operator'],async({sql,actor,request})=>{const body=request.body as {source_asset:string;destination_asset:string;
+    rate_numerator:string;rate_denominator:string;fee_bps:number;minimum_source_minor:string;source_ref:string;expires_at:string;reason:string};
+    return {status:201,body:await publishConversionRate(sql,actor.id,{sourceAsset:body.source_asset,destinationAsset:body.destination_asset,
+      rateNumerator:body.rate_numerator,rateDenominator:body.rate_denominator,feeBps:body.fee_bps,
+      minimumSourceMinor:body.minimum_source_minor,sourceRef:body.source_ref,expiresAt:new Date(body.expires_at),reason:body.reason},request.id)};
+  }));
+  app.post('/v1/admin/wallet-conversion/inventory',{schema:contract('fundWalletConversionInventory','Finance','Recognize safeguarded conversion inventory',
+    'Posts one balanced journal after finance verifies that the exact asset is externally safeguarded. This is an audited accounting action and does not initiate a bank or blockchain transfer.',
+    Type.Ref(ConversionInventoryFundingSchema),{status:201,command:true,roles:['finance_operator'],body:object({
+      asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),amount_minor:Uint,evidence_ref:text('Reconciliation or custody evidence reference.',300),reason:Reason})})},
+  run(['finance_operator'],async({sql,actor,request})=>{const body=request.body as {asset:string;amount_minor:string;evidence_ref:string;reason:string};
+    return {status:201,body:await fundConversionInventory(sql,actor.id,{asset:body.asset,amountMinor:body.amount_minor,
+      evidenceRef:body.evidence_ref,reason:body.reason},request.id)};
+  }));
+  app.post('/v1/wallet-conversion/quotes',{schema:contract('createWalletConversionQuote','Portfolio','Quote an NGN/USDT wallet conversion',
+    'Returns immutable exact-unit terms for 30 seconds. The quote does not reserve funds or guarantee treasury inventory; acceptance performs both checks atomically.',
+    Type.Ref(ConversionQuoteSchema),{status:201,command:true,body:object({source_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),
+      destination_asset:Type.String({pattern:'^(NGN|USDT_BSC)$'}),source_amount_minor:Uint})})},
+  run([],async({sql,actor,request})=>{const assurance=await accountAssurance(sql,actor);
+    requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,403,'FUNDING_ELIGIBILITY_REQUIRED',
+      'Verified identity and approved funding eligibility are required.');
+    const body=request.body as {source_asset:string;destination_asset:string;source_amount_minor:string};return {status:201,
+      body:await createConversionQuote(sql,actor.id,{sourceAsset:body.source_asset,destinationAsset:body.destination_asset,
+        sourceAmountMinor:body.source_amount_minor})};
+  }));
+  app.get('/v1/wallet-conversion/quotes/:id',{schema:contract('getWalletConversionQuote','Portfolio','Read your wallet conversion quote',
+    'Returns the immutable quoted terms and execution state. Expiry is determined from expires_at even while state remains quoted.',
+    Type.Ref(ConversionQuoteSchema),{params:IdParams})},async request=>{const {a}=await authenticated(request);
+      return getConversionQuote(db,a.id,id(request));
+    });
+  app.post('/v1/wallet-conversion/quotes/:id/accept',{schema:contract('acceptWalletConversionQuote','Portfolio','Accept a wallet conversion quote',
+    'Locks both customer wallets and both treasury inventories in deterministic order, verifies expiry and balances, then records two balanced single-asset journals linked by one immutable trade ID.',
+    Type.Ref(ConversionQuoteSchema),{params:IdParams,command:true,body:object({})})},run([],async({sql,actor,request})=>{
+      const assurance=await accountAssurance(sql,actor);requireCondition(assurance.identityStatus==='VERIFIED'&&assurance.fundingEligible,
+        403,'FUNDING_ELIGIBILITY_REQUIRED','Verified identity and approved funding eligibility are required.');
+      return {status:200,body:await executeConversionQuote(sql,actor.id,id(request),request.id)};
+    }));
   app.post('/v1/deposit-intents',{schema:contract('createDepositIntent','Funding','Create a synthetic deposit intent',
     'Available only in the loopback synthetic demo. Returns no payment instructions or quote. Partner confirmation alone cannot credit available collateral. A future approved partner adapter and finalized chain observation are required.',
     Type.Ref(DepositSchema),{command:true,status:201,body:object({asset:Type.String({pattern:'^[A-Z0-9_]{2,32}$'}),
