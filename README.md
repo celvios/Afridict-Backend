@@ -54,6 +54,8 @@ Financial amounts cross APIs as exact integer strings. Clients must reuse the sa
 
 The wallet conversion API quotes direct NGN/USDT exchanges for 30 seconds and executes them atomically against ring-fenced treasury inventory. NGN uses kobo; `USDT_BSC` identifies USDT on BNB Smart Chain with 18 decimals. Both single-asset journals link to one immutable trade. The token, rates, inventory recognition and real-money financial mode remain approval-gated.
 
+Each synthetic market derives its exact collateral asset and contract payout unit from an approved policy binding. Prices remain probability micros on a 1,000,000 scale. Public clients can read `/v1/markets/{id}/collateral-policy` for the market terms. Authenticated clients can read `/v1/markets/{id}/collateral` to select the required wallet, display its balances, and discover a direct conversion source. Order admission always reserves the governed market asset; conversion requires a separate accepted quote.
+
 The synthetic liquidity API includes role-gated AMM activation, finance-controlled treasury funding,
 approved reference prices, 15-second user quotes, atomic execution, position reporting, governed
 redemption, and testnet settlement claims. Institutional RFQs add maker-checker entity approval,

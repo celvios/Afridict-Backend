@@ -75,9 +75,9 @@ describe('collateralized synthetic order book',()=>{
   it('requires governed activation and exposes a sequenced empty snapshot',async()=>{
     const before=await submit('trader','buy','600000','2');
     expect(before.json().code).toBe('MARKET_NOT_OPEN');
-    const denied=await post('trader',`/v1/admin/markets/${marketId}/trading/activate`,{asset_code:'DEMO'});
+    const denied=await post('trader',`/v1/admin/markets/${marketId}/trading/activate`,{});
     expect(denied.statusCode).toBe(403);
-    const active=await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{asset_code:'DEMO'});
+    const active=await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{});
     expect(active.statusCode,active.body).toBe(200);
     expect(active.json()).toMatchObject({market_id:marketId,status:'open',sequence:'1'});
     const book=await get('trader',`/v1/markets/${marketId}/book/yes`);
@@ -187,7 +187,7 @@ describe('collateralized synthetic order book',()=>{
     const open=(await db.query<{id:string}>(`SELECT id FROM clob_orders WHERE state='open'
       AND owner_id=$1 LIMIT 1`,[identities.trader])).rows[0];
     if(open)expect((await post('trader',`/v1/markets/${marketId}/orders/${open.id}/cancel`,{})).statusCode).toBe(200);
-    expect((await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{asset_code:'DEMO'})).statusCode).toBe(409);
+    expect((await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{})).statusCode).toBe(409);
     const fill=(await db.query<{id:string}>('SELECT id FROM clob_fills LIMIT 1')).rows[0]!;
     await expect(db.query('DELETE FROM clob_fills WHERE id=$1',[fill.id])).rejects.toThrow();
     const order=(await db.query<{id:string}>('SELECT id FROM clob_orders LIMIT 1')).rows[0]!;

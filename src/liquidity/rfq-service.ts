@@ -7,7 +7,7 @@ import {getMarket,type MarketRow} from '../markets/service.js';
 import {record} from '../platform/commands.js';
 import type {Sql} from '../platform/database.js';
 import {AppError,requireCondition} from '../platform/errors.js';
-import {contractCollateral,executionFee,parseOrderAmount,parsePrice,PRICE_SCALE,type OrderSide} from '../trading/model.js';
+import {contractCollateral,executionFee,parseOrderAmount,parsePrice,type OrderSide} from '../trading/model.js';
 
 interface EntityRow {id:string;legal_name:string;status:'pending'|'active'|'suspended';exposure_limit_minor:string;
   created_by:string;approved_by:string|null;approved_at:Date|null;created_at:Date;updated_at:Date}
@@ -23,19 +23,23 @@ interface FillRow {id:string;request_id:string;quote_id:string;market_id:string;
   dealer_entity_id:string;requester_owner_id:string;dealer_owner_id:string;requester_side:OrderSide;outcome_id:string;
   price:string;quantity:string;buyer_collateral:string;seller_collateral:string;buyer_fee:string;seller_fee:string;
   journal_id:string;sequence:string;created_at:Date}
+type Collateral={asset_code:string;contract_unit_minor:string};
 
 const iso=(value:Date)=>new Date(value).toISOString();
 const publicEntity=(row:EntityRow)=>({...row,approved_at:row.approved_at?iso(row.approved_at):null,
   created_at:iso(row.created_at),updated_at:iso(row.updated_at)});
-const publicRequest=(row:RequestRow,now=new Date())=>({id:row.id,entity_id:row.entity_id,market_id:row.market_id,
+const publicRequest=(row:RequestRow,collateral:Collateral,now=new Date())=>({id:row.id,entity_id:row.entity_id,market_id:row.market_id,
+  asset_code:collateral.asset_code,contract_unit_minor:collateral.contract_unit_minor,
   outcome_id:row.outcome_id,side:row.side,quantity:row.quantity,expires_at:iso(row.expires_at),
   state:row.state==='open'&&row.expires_at<=now?'expired':row.state,
   accepted_quote_id:row.accepted_quote_id,created_at:iso(row.created_at),updated_at:iso(row.updated_at)});
-const publicQuote=(row:QuoteRow,now=new Date())=>({id:row.id,request_id:row.request_id,dealer_entity_id:row.dealer_entity_id,
+const publicQuote=(row:QuoteRow,collateral:Collateral,now=new Date())=>({id:row.id,request_id:row.request_id,dealer_entity_id:row.dealer_entity_id,
+  asset_code:collateral.asset_code,contract_unit_minor:collateral.contract_unit_minor,
   price:row.price,expires_at:iso(row.expires_at),nonce:row.nonce,signing_key_fingerprint:row.signing_key_fingerprint,
   signature:row.signature,payload_hash:row.payload_hash,state:row.state==='open'&&row.expires_at<=now?'expired':row.state,
   created_at:iso(row.created_at),updated_at:iso(row.updated_at)});
-export const publicRfqFill=(row:FillRow)=>({id:row.id,request_id:row.request_id,quote_id:row.quote_id,
+export const publicRfqFill=(row:FillRow,collateral:Collateral)=>({id:row.id,request_id:row.request_id,quote_id:row.quote_id,
+  asset_code:collateral.asset_code,contract_unit_minor:collateral.contract_unit_minor,
   market_id:row.market_id,outcome_id:row.outcome_id,requester_side:row.requester_side,price:row.price,
   quantity:row.quantity,sequence:row.sequence,created_at:iso(row.created_at)});
 
@@ -120,13 +124,14 @@ async function eligible(sql:Sql,market:MarketRow,actor:Account){
   requireCondition(policy?.trading_enabled,403,'COUNTRY_POLICY_BLOCKED','Trading is not enabled for this jurisdiction and category.');
 }
 async function entityExposure(sql:Sql,entityId:string,marketId:string){
-  const row=(await sql.query<{amount:string}>(`SELECT COALESCE(sum(quantity*1000000),0)::text AS amount FROM rfq_fills
-    WHERE market_id=$1 AND (requester_entity_id=$2 OR dealer_entity_id=$2)`,[marketId,entityId])).rows[0]!;
+  const row=(await sql.query<{amount:string}>(`SELECT COALESCE(sum(f.quantity*m.contract_unit_minor),0)::text AS amount
+    FROM rfq_fills f JOIN clob_markets m ON m.market_id=f.market_id
+    WHERE f.market_id=$1 AND (f.requester_entity_id=$2 OR f.dealer_entity_id=$2)`,[marketId,entityId])).rows[0]!;
   return BigInt(row.amount);
 }
 async function marketReady(sql:Sql,marketId:string,now:Date){
-  const book=(await sql.query<{asset_code:string;status:string}>(
-    'SELECT asset_code,status FROM clob_markets WHERE market_id=$1 FOR UPDATE',[marketId])).rows[0];
+  const book=(await sql.query<{asset_code:string;contract_unit_minor:string;status:string}>(
+    'SELECT asset_code,contract_unit_minor::text,status FROM clob_markets WHERE market_id=$1 FOR UPDATE',[marketId])).rows[0];
   requireCondition(book?.status==='open',409,'MARKET_NOT_OPEN','The trading market is not open.');
   const market=await getMarket(sql,marketId);
   requireCondition(market.terms.liquidity.rfq_enabled&&now.getTime()>=Date.parse(market.terms.open_at)&&
@@ -137,15 +142,15 @@ async function marketReady(sql:Sql,marketId:string,now:Date){
 export async function createRfqRequest(sql:Sql,actor:Account,input:{entityId:string;marketId:string;outcomeId:string;
   side:OrderSide;quantity:string;expiresAt:Date},request:string,now=new Date()){
   await membership(sql,actor.id,input.entityId,'requester');
-  const {market}=await marketReady(sql,input.marketId,now);await eligible(sql,market,actor);
+  const {book,market}=await marketReady(sql,input.marketId,now);await eligible(sql,market,actor);
   requireCondition(market.terms.outcomes.some(outcome=>outcome.id===input.outcomeId),422,'INVALID_OUTCOME','Choose a published outcome.');
-  const quantity=parseOrderAmount(input.quantity,'quantity'),exposure=quantity*PRICE_SCALE;
+  const quantity=parseOrderAmount(input.quantity,'quantity'),unit=BigInt(book.contract_unit_minor),exposure=quantity*unit;
   requireCondition(input.expiresAt>now&&input.expiresAt.getTime()<=Date.parse(market.terms.trading_cutoff),
     422,'INVALID_RFQ_EXPIRY','RFQ expiry must be in the current published trading window.');
   const entity=(await sql.query<EntityRow>('SELECT * FROM rfq_entities WHERE id=$1 FOR SHARE',[input.entityId])).rows[0]!;
-  const open=(await sql.query<{amount:string}>(`SELECT COALESCE(sum(quantity*1000000),0)::text AS amount FROM rfq_requests
+  const open=(await sql.query<{amount:string}>(`SELECT COALESCE(sum(quantity),0)::text AS amount FROM rfq_requests
     WHERE entity_id=$1 AND market_id=$2 AND state='open' AND expires_at>$3`,[input.entityId,input.marketId,now])).rows[0]!;
-  requireCondition(await entityExposure(sql,input.entityId,input.marketId)+BigInt(open.amount)+exposure<=BigInt(entity.exposure_limit_minor),
+  requireCondition(await entityExposure(sql,input.entityId,input.marketId)+BigInt(open.amount)*unit+exposure<=BigInt(entity.exposure_limit_minor),
     409,'RFQ_EXPOSURE_LIMIT','The entity RFQ exposure limit would be exceeded.');
   const row=(await sql.query<RequestRow>(`INSERT INTO rfq_requests(id,entity_id,owner_id,market_id,outcome_id,side,
     quantity,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,[randomUUID(),input.entityId,actor.id,
@@ -153,7 +158,7 @@ export async function createRfqRequest(sql:Sql,actor:Account,input:{entityId:str
   await record(sql,{actor:actor.id,authority:'rfq_requester',action:'rfq.request_created',resource:row.id,request,
     reason:'Request an institutional synthetic quote',after:{market_id:input.marketId,outcome_id:input.outcomeId,
       side:input.side,quantity:quantity.toString(),expires_at:input.expiresAt.toISOString()}});
-  return publicRequest(row);
+  return publicRequest(row,book);
 }
 
 export async function createRfqQuote(sql:Sql,actor:Account,input:{entityId:string;requestId:string;price:string;
@@ -161,7 +166,7 @@ export async function createRfqQuote(sql:Sql,actor:Account,input:{entityId:strin
   const member=await membership(sql,actor.id,input.entityId,'dealer');
   let rfq=(await sql.query<RequestRow>('SELECT * FROM rfq_requests WHERE id=$1',[input.requestId])).rows[0];
   requireCondition(rfq?.state==='open'&&rfq.expires_at>now,409,'RFQ_REQUEST_NOT_OPEN','The RFQ request is not open.');
-  const {market}=await marketReady(sql,rfq.market_id,now);await eligible(sql,market,actor);
+  const {book,market}=await marketReady(sql,rfq.market_id,now);await eligible(sql,market,actor);
   rfq=(await sql.query<RequestRow>('SELECT * FROM rfq_requests WHERE id=$1 FOR SHARE',[input.requestId])).rows[0];
   requireCondition(rfq?.state==='open'&&rfq.expires_at>now,409,'RFQ_REQUEST_NOT_OPEN','The RFQ request is not open.');
   requireCondition(rfq.entity_id!==input.entityId&&rfq.owner_id!==actor.id,403,'RFQ_SELF_DEAL','Requester and dealer must be independent.');
@@ -183,7 +188,7 @@ export async function createRfqQuote(sql:Sql,actor:Account,input:{entityId:strin
   await record(sql,{actor:actor.id,authority:'rfq_dealer',action:'rfq.quote_created',resource:row.id,request,
     reason:'Submit a signed institutional synthetic quote',after:{request_id:rfq.id,price:price.toString(),
       expires_at:expiresAt,payload_hash:row.payload_hash,signing_key_fingerprint:row.signing_key_fingerprint}});
-  return publicQuote(row);
+  return publicQuote(row,book);
 }
 
 export async function acceptRfqQuote(sql:Sql,actor:Account,requestId:string,quoteId:string,command:string,now=new Date()){
@@ -201,12 +206,12 @@ export async function acceptRfqQuote(sql:Sql,actor:Account,requestId:string,quot
   await eligible(sql,market,actor);await eligible(sql,market,dealer);
   const entities=(await sql.query<EntityRow>('SELECT * FROM rfq_entities WHERE id=ANY($1::uuid[]) FOR SHARE',
     [[rfq.entity_id,quote.dealer_entity_id].sort()])).rows;
-  const exposure=BigInt(rfq.quantity)*PRICE_SCALE;
+  const unit=BigInt(book.contract_unit_minor),exposure=BigInt(rfq.quantity)*unit;
   for(const entity of entities)requireCondition(await entityExposure(sql,entity.id,rfq.market_id)+exposure<=BigInt(entity.exposure_limit_minor),
     409,'RFQ_EXPOSURE_LIMIT','An entity RFQ exposure limit changed before acceptance.');
-  const price=BigInt(quote.price),quantity=BigInt(rfq.quantity),collateral=contractCollateral(quantity,price);
-  const feeBps=BigInt(market.terms.risk.fee_bps),buyerFee=executionFee('buy',quantity,price,feeBps),
-    sellerFee=executionFee('sell',quantity,price,feeBps);
+  const price=BigInt(quote.price),quantity=BigInt(rfq.quantity),collateral=contractCollateral(quantity,price,unit);
+  const feeBps=BigInt(market.terms.risk.fee_bps),buyerFee=executionFee('buy',quantity,price,feeBps,unit),
+    sellerFee=executionFee('sell',quantity,price,feeBps,unit);
   const buyer=rfq.side==='buy'?actor:dealer,seller=rfq.side==='sell'?actor:dealer;
   for(const owner of [buyer.id,seller.id].sort())await lockOwnerAsset(sql,owner,book.asset_code);
   const buyerReservation=await reserve(sql,{owner:buyer.id,asset:book.asset_code,purpose:'rfq',
@@ -240,7 +245,7 @@ export async function acceptRfqQuote(sql:Sql,actor:Account,requestId:string,quot
   await sql.query("UPDATE rfq_requests SET state='accepted',accepted_quote_id=$2,updated_at=now() WHERE id=$1",[rfq.id,quote.id]);
   await sql.query("INSERT INTO clob_events(market_id,sequence,event_type,fill_id) VALUES($1,$2,'rfq_execution',$3)",
     [rfq.market_id,sequence,fill.id]);
-  const result=publicRfqFill(fill);
+  const result=publicRfqFill(fill,book);
   await record(sql,{actor:actor.id,authority:'rfq_requester',action:'rfq.quote_accepted',resource:quote.id,request:command,
     reason:'Accept a signed fully collateralized institutional quote',after:result});
   return result;
@@ -254,16 +259,19 @@ export async function cancelRfqRequest(sql:Sql,actor:Account,id:string,command:s
   await sql.query("UPDATE rfq_quotes SET state='rejected',updated_at=now() WHERE request_id=$1 AND state='open'",[id]);
   await record(sql,{actor:actor.id,authority:'rfq_requester',action:'rfq.request_cancelled',resource:id,request:command,
     reason:'Cancel an open institutional RFQ request',after:{state:'cancelled'}});
-  return publicRequest(after);
+  const collateral=(await sql.query<Collateral>('SELECT asset_code,contract_unit_minor::text FROM clob_markets WHERE market_id=$1',[row.market_id])).rows[0]!;
+  return publicRequest(after,collateral);
 }
 
 export async function listRfqRequests(sql:Sql,actor:Account,marketId:string){
+  const collateral=(await sql.query<Collateral>('SELECT asset_code,contract_unit_minor::text FROM clob_markets WHERE market_id=$1',[marketId])).rows[0];
+  requireCondition(collateral,404,'NOT_FOUND','Trading market not found.');
   const dealer=(await sql.query(`SELECT 1 FROM rfq_entity_memberships m JOIN rfq_entities e ON e.id=m.entity_id
     WHERE m.account_id=$1 AND m.role='dealer' AND e.status='active' LIMIT 1`,[actor.id])).rows[0];
   const rows=(await sql.query<RequestRow>(`SELECT * FROM rfq_requests WHERE market_id=$1 AND
     (owner_id=$2 OR ($3::boolean AND state='open' AND expires_at>now())) ORDER BY created_at DESC,id DESC LIMIT 100`,
   [marketId,actor.id,Boolean(dealer)])).rows;
-  return {items:rows.map(row=>publicRequest(row))};
+  return {items:rows.map(row=>publicRequest(row,collateral))};
 }
 export async function listRfqQuotes(sql:Sql,actor:Account,requestId:string){
   const rfq=(await sql.query<RequestRow>('SELECT * FROM rfq_requests WHERE id=$1',[requestId])).rows[0];
@@ -271,10 +279,13 @@ export async function listRfqQuotes(sql:Sql,actor:Account,requestId:string){
   const rows=(await sql.query<QuoteRow>(`SELECT * FROM rfq_quotes WHERE request_id=$1 AND
     (dealer_owner_id=$2 OR $3::boolean) ORDER BY created_at,id LIMIT 100`,[requestId,actor.id,rfq.owner_id===actor.id])).rows;
   requireCondition(rfq.owner_id===actor.id||rows.length>0,403,'RFQ_NOT_VISIBLE','This RFQ is not visible to the caller.');
-  return {items:rows.map(row=>publicQuote(row))};
+  const collateral=(await sql.query<Collateral>('SELECT asset_code,contract_unit_minor::text FROM clob_markets WHERE market_id=$1',[rfq.market_id])).rows[0]!;
+  return {items:rows.map(row=>publicQuote(row,collateral))};
 }
 export async function listRfqFills(sql:Sql,actor:Account,marketId:string){
+  const collateral=(await sql.query<Collateral>('SELECT asset_code,contract_unit_minor::text FROM clob_markets WHERE market_id=$1',[marketId])).rows[0];
+  requireCondition(collateral,404,'NOT_FOUND','Trading market not found.');
   const rows=(await sql.query<FillRow>(`SELECT * FROM rfq_fills WHERE market_id=$1 AND
     (requester_owner_id=$2 OR dealer_owner_id=$2) ORDER BY sequence DESC LIMIT 100`,[marketId,actor.id])).rows;
-  return {items:rows.map(publicRfqFill)};
+  return {items:rows.map(row=>publicRfqFill(row,collateral))};
 }

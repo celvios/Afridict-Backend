@@ -24,7 +24,7 @@ Reviewed 15 September 2026 against merged backend implementation. No frontend di
 | NGN deposits / withdrawals | PARTIAL | NGN 200 minimum collection intents and administrator-reviewed payout state machine exist; production provider approval and settlement reconciliation remain |
 | Bank resolution / payment methods | PARTIAL | Ephemeral bank resolution and encrypted-at-rest payout details exist; reusable accounts and production validation remain |
 | Markets | PARTIAL | Generalized definitions, governance, evidence policy and publication exist; opening/trading lifecycle absent |
-| CLOB / orderbook | COMPLETE (SYNTHETIC) | Deterministic price-time matching, partial fills, cancellation, sequence recovery, fees, halts and concurrency tests |
+| CLOB / orderbook | COMPLETE (SYNTHETIC) | Deterministic price-time matching, governed NGN/USDT-capable contract units, automatic market-wallet selection, partial fills, cancellation, sequence recovery, fees, halts and concurrency tests |
 | AMM | COMPLETE (SYNTHETIC) | Governed treasury, bounded exact quotes, exposure/loss/slippage controls, atomic execution, redemption and settlement |
 | Institutional RFQ | COMPLETE (SYNTHETIC) | Maker-checker entities, Ed25519 dealer quotes, expiry, exposure limits, atomic two-party execution and settlement |
 | Collateral reservation | COMPLETE (SYNTHETIC) | CLOB, AMM, RFQ and withdrawal paths share one owner/asset serialization authority |

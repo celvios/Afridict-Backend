@@ -38,7 +38,7 @@ beforeAll(async () => {
     VALUES($1,$2,'scheduled',$3,$4,now())`, [marketId, ids.creator, JSON.stringify(policy), hash(policy)]);
   await db.query(`INSERT INTO clob_markets(market_id,asset_code,status,activated_by)
     VALUES($1,'DEMO','open',$2)`,[marketId,approver.id]);
-  await db.transaction(sql => activateAmm(sql, approver, marketId, 'yes', 'DEMO', 100));
+  await db.transaction(sql => activateAmm(sql, approver, marketId, 'yes', 100));
   await db.transaction(sql => fundAmm(sql, finance, marketId, 'yes', '8000000', 'initial-funding'));
   await db.transaction(async sql => {
     const custody = await ledgerAccount(sql, null, 'DEMO', 'escrow_asset');

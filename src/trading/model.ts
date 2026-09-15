@@ -40,24 +40,25 @@ const ceilDiv = (numerator: bigint, denominator: bigint) => (numerator + denomin
  * Splits one fully collateralized payout across the two counterparties.
  * The buyer funds the selected-outcome claim and the seller funds its complement.
  */
-export function contractCollateral(quantity: bigint, price: bigint) {
-  if (quantity <= 0n || price <= 0n || price >= PRICE_SCALE) throw new Error('Invalid contract collateral');
-  if (quantity > MAX_UINT256 / PRICE_SCALE) throw new Error('Contract collateral exceeds uint256');
-  const buyer = quantity * price;
-  const seller = quantity * (PRICE_SCALE - price);
-  return { buyer, seller, total: quantity * PRICE_SCALE };
+export function contractCollateral(quantity: bigint, price: bigint,contractUnit:bigint=PRICE_SCALE) {
+  if (quantity<=0n||price<=0n||price>=PRICE_SCALE||contractUnit<=1n)throw new Error('Invalid contract collateral');
+  if(quantity>MAX_UINT256/contractUnit||contractUnit>MAX_UINT256/price)throw new Error('Contract collateral exceeds uint256');
+  const buyerPerShare=contractUnit*price/PRICE_SCALE;
+  if(buyerPerShare<=0n||buyerPerShare>=contractUnit)throw new Error('Price is below the collateral asset precision');
+  const buyer=quantity*buyerPerShare,seller=quantity*(contractUnit-buyerPerShare);
+  return {buyer,seller,total:quantity*contractUnit};
 }
 
-export function executionFee(side: OrderSide, quantity: bigint, price: bigint, feeBps: bigint) {
+export function executionFee(side: OrderSide, quantity: bigint, price: bigint, feeBps: bigint,contractUnit:bigint=PRICE_SCALE) {
   if (quantity <= 0n || price <= 0n || price >= PRICE_SCALE || feeBps < 0n || feeBps > 1000n) throw new Error('Invalid execution fee');
-  const perShare = side === 'buy' ? price : PRICE_SCALE - price;
-  if (quantity > MAX_UINT256 / PRICE_SCALE) throw new Error('Execution fee exceeds uint256');
+  const split=contractCollateral(1n,price,contractUnit),perShare=side==='buy'?split.buyer:split.seller;
+  if (quantity > MAX_UINT256 / contractUnit) throw new Error('Execution fee exceeds uint256');
   return quantity * ceilDiv(perShare * feeBps, 10_000n);
 }
 
-export function reservationRequired(side: OrderSide, quantity: bigint, limitPrice: bigint, feeBps: bigint) {
-  const collateral = contractCollateral(quantity, limitPrice)[side === 'buy' ? 'buyer' : 'seller'];
-  const fee = executionFee(side, quantity, limitPrice, feeBps);
+export function reservationRequired(side: OrderSide, quantity: bigint, limitPrice: bigint, feeBps: bigint,contractUnit:bigint=PRICE_SCALE) {
+  const collateral = contractCollateral(quantity,limitPrice,contractUnit)[side==='buy'?'buyer':'seller'];
+  const fee=executionFee(side,quantity,limitPrice,feeBps,contractUnit);
   if (collateral + fee > MAX_UINT256) throw new Error('Reservation exceeds uint256');
   return { collateral, fee, total: collateral + fee };
 }

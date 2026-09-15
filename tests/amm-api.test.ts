@@ -40,12 +40,12 @@ afterAll(async()=>{if(app)await app.close();if(db)await db.close();});
 
 describe('bounded AMM API',()=>{
   it('enforces governance and exposes an idempotent quote execution journey',async()=>{
-    expect((await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{asset_code:'DEMO'},'activate-clob')).statusCode).toBe(200);
+    expect((await post('approver',`/v1/admin/markets/${marketId}/trading/activate`,{},'activate-clob')).statusCode).toBe(200);
     const denied=await post('trader',`/v1/admin/markets/${marketId}/amm/yes/activate`,
-      {asset_code:'DEMO',impact_bps:100},'denied-activation');
+      {impact_bps:100},'denied-activation');
     expect(denied.statusCode).toBe(403);
     const activated=await post('approver',`/v1/admin/markets/${marketId}/amm/yes/activate`,
-      {asset_code:'DEMO',impact_bps:100},'activate-amm');
+      {impact_bps:100},'activate-amm');
     expect(activated.statusCode,activated.body).toBe(200);
     expect(activated.json()).toMatchObject({market_id:marketId,outcome_id:'yes',status:'open'});
     expect((await post('finance',`/v1/admin/markets/${marketId}/amm/yes/funding`,
