@@ -38,6 +38,8 @@ Read models, caches, partner webhooks, RPC responses, indexers, and transaction 
 
 All financial values use explicit assets and integer minor units. Journals balance per asset and remain append-only. One owner/asset lock serializes reservations across withdrawals and future CLOB, AMM, and RFQ paths. Commands use idempotency records, privileged actions produce audit and outbox events, and production runs with a restricted database role.
 
+Realtime delivery reads the canonical append-only market sequence rather than creating a second trading state. Browser clients exchange their bearer-authenticated HTTP session for a one-use ticket, authenticate the WebSocket in its first frame, and resume after the last contiguous sequence they applied. Market events contain no customer identity; order-book snapshots contain aggregate depth, while position snapshots are scoped to the ticket owner. Slow connections are closed with a recovery cursor instead of accumulating an unbounded queue.
+
 Provider SDKs and payloads terminate at adapter boundaries. Domain modules use normalized Afridict types. Secrets, OTPs, raw KYC documents, and customer data are excluded from logs, examples, analytics, and general events.
 
 Pino emits structured operational logs with request and OpenAPI operation identifiers. Optional Sentry reporting receives sanitized exception types and stack frames plus non-customer correlation identifiers. Request bodies, headers, users, breadcrumbs, exception messages, provider payloads, and financial details are excluded from external error reports. See [ADR 0008](adr/0008-privacy-safe-operational-telemetry.md).

@@ -4,6 +4,7 @@ import swaggerUi from '@fastify/swagger-ui';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import websocket from '@fastify/websocket';
 import { Type, type Static, type TSchema } from '@sinclair/typebox';
 import { createHash, randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
@@ -53,6 +54,9 @@ import {activateAmm,createAmmQuote,executeAmmQuote,fundAmm,listAmmQuotes,recordA
 import {RfqEntitySchema,RfqFillSchema,RfqMembershipSchema,RfqQuoteSchema,RfqRequestSchema,rfqSchemas} from './liquidity/rfq-contracts.js';
 import {acceptRfqQuote,addRfqMember,approveRfqEntity,cancelRfqRequest,createRfqEntity,createRfqQuote,
   createRfqRequest,listRfqEntities,listRfqFills,listRfqMembers,listRfqQuotes,listRfqRequests} from './liquidity/rfq-service.js';
+import {RealtimeTicketSchema,realtimeSchemas} from './realtime/contracts.js';
+import {createRealtimeTicket} from './realtime/service.js';
+import {registerRealtimeSocket,type RealtimeOptions} from './realtime/socket.js';
 
 type Request = FastifyRequest;
 type Context = { sql: Sql; actor: Account; principal: Principal; request: Request };
@@ -72,7 +76,7 @@ function contract(id: string, tag: string, summary: string, description: string,
 
 export async function buildApp(db: Database, cfg: Config, authOverride?: Authenticator, partnerVerifier?: PartnerVerifier,
   contactDependencies?:ContactDependencies,personaDependencies?:PersonaDependencies,fiatDependencies?:FiatDependencies,
-  resolutionClock:()=>Date=()=>new Date(),settlementDependencies?:SettlementDependencies) {
+  resolutionClock:()=>Date=()=>new Date(),settlementDependencies?:SettlementDependencies,realtimeOptions?:RealtimeOptions) {
   if (cfg.environment === 'production' && (cfg.authMode !== 'oidc' || authOverride)) throw new Error('Production requires the configured OIDC verifier');
   if (cfg.environment === 'production' && cfg.financialMode !== 'disabled') throw new Error('Financial activation requires approved adapters and governance');
   const auth = authOverride ?? oidcAuthenticator(cfg);
@@ -86,6 +90,7 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     exposedHeaders: ['X-Request-Id','Retry-After'], methods: ['GET','POST','PUT','OPTIONS'] });
   await app.register(rateLimit, { max: 120, timeWindow: '1 minute', global: true,
     errorResponseBuilder: req => ({ code: 'RATE_LIMITED', message: 'Request limit exceeded. Retry after the indicated delay.', request_id: req.id }) });
+  await app.register(websocket,{options:{maxPayload:4096}});
   await app.register(swagger, { openapi: { openapi: '3.1.1',
     info: { title: 'Afridict Backend API', version: '0.5.0', description: 'Financial and prediction-market infrastructure API. Collateralized matching, governed resolution, redemption and Robinhood Chain settlement preparation operate only in the isolated synthetic testnet workflow. Real-money trading, mainnet settlement and production outcome finality remain disabled pending approved deployments, adapters and governance.' },
     servers: [{ url: 'http://127.0.0.1:3000', description: 'Local development only; not a production address' }],
@@ -94,7 +99,7 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
       description: 'OIDC access token verified against configured issuer, audience and JWKS. Roles come from server-owned account records. Demo mode accepts only synthetic demo.<persona> selectors; those never work in production.' } } },
   }, refResolver: { buildLocalReference: json => String(json.$id) } });
   for (const schema of [...schemas,...financialSchemas,...tradingSchemas,...resolutionSchemas,...settlementSchemas,
-    ...liquiditySchemas,...rfqSchemas]) app.addSchema(schema);
+    ...liquiditySchemas,...rfqSchemas,...realtimeSchemas]) app.addSchema(schema);
   if (cfg.docs) await app.register(swaggerUi, { routePrefix: '/docs', staticCSP: true });
   app.addHook('onRequest', async (request, reply) => { reply.header('X-Request-Id', request.id); reply.header('Cache-Control', 'no-store'); });
   app.addHook('preParsing',async(request,_reply,payload)=>{
@@ -151,6 +156,14 @@ export async function buildApp(db: Database, cfg: Config, authOverride?: Authent
     return reply.code(result.status).send(result.body);
   };
   const id = (req: Request) => (req.params as { id: string }).id;
+
+  app.post('/v1/realtime/tickets',{schema:contract('createRealtimeTicket','Trading','Create a one-use realtime ticket',
+    'Exchanges the caller bearer-authenticated session for a random one-use WebSocket credential. The server stores only its SHA-256 digest; the ticket expires after 60 seconds and must be sent in the first WebSocket message.',
+    Type.Ref(RealtimeTicketSchema),{status:201})},async(request,reply)=>{
+      const {a}=await authenticated(request);
+      return reply.code(201).send(await db.transaction(sql=>createRealtimeTicket(sql,a.id)));
+    });
+  registerRealtimeSocket(app,db,realtimeOptions);
 
   app.get('/health/live', { schema: contract('getLiveness','System','Check process liveness','Returns process liveness; does not prove database, partner or chain readiness.', object({ status: Type.Literal('ok') }), { public: true }) }, async () => ({ status: 'ok' }));
   app.get('/health/ready', { schema: contract('getReadiness','System','Check database readiness','Checks connectivity and that the governance schema exists. This is not a production financial-readiness assertion.', object({ status: Type.Literal('ready') }), { public: true }) }, async () => {

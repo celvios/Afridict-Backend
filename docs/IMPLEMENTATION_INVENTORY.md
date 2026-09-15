@@ -32,7 +32,7 @@ Reviewed 15 September 2026 against merged backend implementation. No frontend di
 | Settlement | PARTIAL | Governed redemptions and deterministic Robinhood Chain testnet claim batches exist; production deployment remains absent |
 | Robinhood Chain | PARTIAL | Smart-account and finality observation schemas exist; RPC, signing, indexing and reorg adapters absent |
 | Crypto deposits / withdrawals | PARTIAL | Synthetic generic workflows only; real chain rails absent |
-| Realtime | NOT STARTED | No WebSocket feeds or resume protocol |
+| Realtime | COMPLETE (SYNTHETIC) | One-use browser authentication, ordered market replay, book and private position snapshots, cursor recovery, bounded backpressure and AsyncAPI contract |
 | Notifications | NOT STARTED | Transactional outbox primitive exists; no delivery workers/providers |
 | Transaction history | PARTIAL | User ledger statement endpoint exists; normalized cross-domain transaction model absent |
 | Admin | PARTIAL | Market/compliance governance and audit endpoints exist; finance/resolution/operations consoles incomplete |

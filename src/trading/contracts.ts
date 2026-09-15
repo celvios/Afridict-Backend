@@ -19,7 +19,7 @@ export const TradingStateSchema=object({market_id:UUID,asset_code:Type.String(),
   status:Type.String({enum:['open','halted']}),sequence:Uint},{$id:'ClobTradingState'});
 export const MarketEventSchema=object({sequence:Uint,event_type:Type.String({enum:[
   'activated','halted','order_accepted','fill','order_cancelled','resolution_proposed',
-  'resolution_challenged','resolution_finalized','redemption_batch']}),
+  'resolution_challenged','resolution_finalized','redemption_batch','amm_execution','rfq_execution']}),
   order_id:Type.Union([UUID,Type.Null()]),fill_id:Type.Union([UUID,Type.Null()])},
 {$id:'ClobMarketEvent'});
 export const tradingSchemas=[OrderSchema,FillSchema,PositionSchema,BookSchema,TradingStateSchema,MarketEventSchema];

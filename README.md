@@ -41,6 +41,7 @@ npm audit --omit=dev --audit-level=high
 ## Contracts and architecture
 
 - `api/openapi.json` is the generated OpenAPI 3.1 HTTP contract.
+- `api/asyncapi.json` is the AsyncAPI 3.0 WebSocket message and sequence-recovery contract.
 - `api/client-types.ts` contains generated TypeScript client types.
 - `docs/ARCHITECTURE.md` explains system boundaries and data authority.
 - `docs/IMPLEMENTATION_INVENTORY.md` records completed, partial, and missing work plus the PR sequence.
@@ -56,3 +57,8 @@ approved reference prices, 15-second user quotes, atomic execution, position rep
 redemption, and testnet settlement claims. Institutional RFQs add maker-checker entity approval,
 approved Ed25519 dealer keys, expiring signed quotes, per-entity exposure limits, and atomic two-party
 collateral. These routes remain disabled outside the isolated demo.
+
+Authenticated clients can create a 60-second one-use realtime ticket with `POST /v1/realtime/tickets`,
+open `/v1/realtime`, and send the ticket in the first JSON frame. The stream replays canonical market
+events after a client cursor and publishes aggregate book and private position snapshots. See the
+AsyncAPI contract for frame schemas, recovery steps, and close codes.
